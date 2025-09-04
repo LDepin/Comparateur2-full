@@ -205,7 +205,9 @@ export default function SearchPage() {
             <button key={d} onClick={() => handlePickDay(d)} disabled={!info.disponible}
               className={`p-1 rounded flex flex-col items-center justify-center ${cls} ${isSelected ? "ring-2 ring-blue-500" : ""} ${!info.disponible ? "opacity-60 cursor-not-allowed" : "hover:opacity-90"}`}>
               <div className="text-xs font-medium dark:text-neutral-200">{Number(dayNum)}</div>
-              <div className="text-sm font-bold mt-0.5 text-indigo-700 dark:text-indigo-200">{info.disponible ? `${Math.round(info.prix)}€` : "--"}</div>
+              <div className="text-sm font-bold mt-0.5 text-indigo-700 dark:text-indigo-200">
+  {info.disponible && typeof info.prix === "number" ? `${Math.round(info.prix)}€` : "--"}
+</div>
             </button>
           );
         })}
