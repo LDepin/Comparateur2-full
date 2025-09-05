@@ -1,670 +1,657 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// ---------- utils ----------
+type Flight = {
+  compagnie: string;
+  prix: number | string;
+  depart: string;        // code aéroport (ex: PAR)
+  arrivee: string;       // code aéroport (ex: BCN)
+  heure_depart: string;  // ISO ex: 2025-09-15T10:44
+  heure_arrivee: string; // ISO
+  duree: string;         // ex: PT1H40M
+  escales: number;
+  um_ok: boolean;
+  animal_ok: boolean;
+};
+
+type CalendarCell = {
+  prix: number | null;
+  disponible: boolean;
+};
+
+type CalendarMap = Record<string, CalendarCell>;
+
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://127.0.0.1:8000";
 
-const toYMD = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
-
-const fromYMD = (ymd: string) => {
-  // robust parse YYYY-MM-DD
-  const [y, m, d] = ymd.split("-").map((n) => parseInt(n, 10));
-  return new Date(y, (m || 1) - 1, d || 1);
+const toYMD = (d: Date) => {
+  const y = d.getFullYear();
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${y}-${m}-${day}`;
 };
 
-function parseISODurationToMin(s?: string | null): number | null {
-  if (!s || typeof s !== "string") return null;
-  // formats like PT1H40M, PT2H, PT55M
-  const m = s.match(/^PT(?:(\d+)H)?(?:(\d+)M)?$/i);
-  if (!m) return null;
+const toYM = (d: Date) => {
+  const y = d.getFullYear();
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  return `${y}-${m}`;
+};
+
+const parseISOLocalHM = (iso: string) => {
+  // Affiche HH:mm locale même si l’ISO vient du backend
+  const dt = new Date(iso);
+  const hh = `${dt.getHours()}`.padStart(2, "0");
+  const mm = `${dt.getMinutes()}`.padStart(2, "0");
+  return `${hh}:${mm}`;
+};
+
+const parsePTtoHM = (pt: string) => {
+  // "PT1H40M" -> "1h40"
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?/.exec(pt);
+  if (!m) return pt;
   const h = m[1] ? parseInt(m[1], 10) : 0;
-  const mm = m[2] ? parseInt(m[2], 10) : 0;
-  return h * 60 + mm;
-}
-
-function formatMinutes(min: number | null) {
-  if (min == null || isNaN(min)) return "—";
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return h > 0 ? `${h}h${m.toString().padStart(2, "0")}` : `${m} min`;
-}
-
-function hhmm(dateLike?: string | Date | null) {
-  if (!dateLike) return "—";
-  const d = typeof dateLike === "string" ? new Date(dateLike) : dateLike;
-  if (isNaN(d.getTime())) return "—";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(
-    d.getMinutes()
-  ).padStart(2, "0")}`;
-}
-
-type CalendarCell = { prix: number | null; disponible: boolean };
-type CalendarMap = Record<string, CalendarCell>;
-
-type Segment = {
-  from?: string;
-  to?: string;
-  depart?: string; // ISO
-  arrive?: string; // ISO
-  carrier?: string;
-  duration?: string; // ISO PT...
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (h && min) return `${h}h${min}`;
+  if (h) return `${h}h`;
+  return `${min} min`;
 };
 
-type NormalizedOffer = {
-  price: number;
-  segments: Segment[];
-  stops: number;
-  durationMin: number | null;
-  um_ok: boolean;
-  animal_ok: boolean;
-  airlines: string[];
+const durationToMinutes = (pt: string) => {
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?/.exec(pt);
+  if (!m) return 0;
+  const h = m[1] ? parseInt(m[1], 10) : 0;
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  return h * 60 + min;
 };
 
-// ---------- composant ----------
+const euro = (v: number | null | undefined) =>
+  typeof v === "number" ? `${Math.round(v)} €` : "—";
+
+const classByPrice = (p: number | null, min: number, max: number, available: boolean) => {
+  if (!available || p == null || !isFinite(p)) {
+    return "bg-gray-100 dark:bg-neutral-800 text-gray-400";
+  }
+  if (max <= min) {
+    return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-200";
+  }
+  const r = (p - min) / (max - min); // 0 -> pas cher, 1 -> cher
+  if (r < 0.33) return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-200";
+  if (r < 0.66) return "bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200";
+  return "bg-rose-100 dark:bg-rose-900/40 text-rose-900 dark:text-rose-200";
+};
+
 export default function SearchPage() {
-  // form
+  // Formulaires
   const [origin, setOrigin] = useState("PAR");
   const [destination, setDestination] = useState("BCN");
-  const [date, setDate] = useState(toYMD(new Date()));
+  const [date, setDate] = useState<string>(toYMD(new Date()));
   const [sort, setSort] = useState<"price" | "duration">("price");
-  const [stopsFilter, setStopsFilter] = useState<"all" | "direct" | "stops">(
-    "all"
-  );
+  const [directOnly, setDirectOnly] = useState(false);
 
-  // calendrier
-  const [currentMonth, setCurrentMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  // Résultats
+  const [results, setResults] = useState<Flight[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Calendrier
   const [calendar, setCalendar] = useState<CalendarMap>({});
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [view, setView] = useState<"month" | "week">("month");
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
-  // résultats vols
-  const [results, setResults] = useState<NormalizedOffer[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [currentMonth, setCurrentMonth] = useState<string>(toYM(new Date()));
+  const [selectedDate, setSelectedDate] = useState<string>(date);
 
-  // ----- calendar fetch -----
+  // Mini calendrier (popup)
+  const [showMini, setShowMini] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Fermer le mini-cal quand on clique ailleurs ou ESC
   useEffect(() => {
-    async function run() {
-      try {
-        setCalendarError(null);
-        setCalendarLoading(true);
-        const res = await fetch(
-          `${API_BASE}/calendar?origin=${encodeURIComponent(
-            origin
-          )}&destination=${encodeURIComponent(
-            destination
-          )}&month=${encodeURIComponent(currentMonth)}`
-        );
-        const data = await res.json();
-        // data.calendar: { "YYYY-MM-DD": { prix, disponible } }
-        setCalendar(data?.calendar || {});
-      } catch (e: any) {
-        setCalendarError("Impossible de charger le calendrier.");
-        setCalendar({});
-      } finally {
-        setCalendarLoading(false);
-      }
-    }
-    run();
-  }, [origin, destination, currentMonth]);
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setShowMini(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowMini(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
-  // ----- search flights -----
-  async function searchFlights(d?: string) {
-    const theDate = d || date;
+  // Charger le calendrier quand le mois / OD change
+  useEffect(() => {
+    void fetchCalendar(currentMonth);
+  }, [currentMonth, origin, destination]);
+
+  // Charger les vols au chargement initial et à chaque changement de date
+  useEffect(() => {
+    setSelectedDate(date);
+    void searchFlights(date);
+  }, [date, origin, destination, sort, directOnly]);
+
+  const fetchCalendar = async (month: string) => {
     try {
-      setErrorMsg(null);
-      setLoading(true);
+      setCalendarError(null);
+      setCalendarLoading(true);
       const res = await fetch(
-        `${API_BASE}/search?origin=${encodeURIComponent(
-          origin
-        )}&destination=${encodeURIComponent(
+        `${API_BASE}/calendar?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(
           destination
-        )}&date=${encodeURIComponent(theDate)}`
+        )}&month=${encodeURIComponent(month)}`
       );
-      const data = await res.json();
-      const offers = Array.isArray(data?.results) ? data.results : [];
-      const normalized = offers.map(normalizeOfferSafely);
-      setResults(applyClientSortAndFilter(normalized, sort, stopsFilter));
+      const data = (await res.json()) as { calendar: CalendarMap };
+      setCalendar(data.calendar || {});
     } catch (e: any) {
-      setErrorMsg("Erreur de recherche.");
+      setCalendarError("Impossible de charger le calendrier.");
+    } finally {
+      setCalendarLoading(false);
+    }
+  };
+
+  const searchFlights = async (d: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await fetch(
+        `${API_BASE}/search?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(
+          destination
+        )}&date=${encodeURIComponent(d)}`
+      );
+      const data = (await res.json()) as { results: Flight[] };
+
+      let list = Array.isArray(data.results) ? data.results : [];
+      // Normaliser + filtres client
+      list = list
+        .map((f) => ({
+          ...f,
+          prix: typeof f.prix === "string" ? Number(f.prix) : f.prix,
+        }))
+        .filter((f) => (directOnly ? f.escales === 0 : true));
+
+      // Tri
+      list.sort((a, b) => {
+        if (sort === "price") {
+          return Number(a.prix ?? 0) - Number(b.prix ?? 0);
+        }
+        // durée
+        return durationToMinutes(a.duree || "PT0M") - durationToMinutes(b.duree || "PT0M");
+      });
+
+      setResults(list);
+    } catch (e: any) {
+      setError("Échec de la recherche.");
       setResults([]);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  // tri/filtre client quand l’utilisateur change d’option
-  useEffect(() => {
-    if (results.length) {
-      setResults((prev) => applyClientSortAndFilter(prev, sort, stopsFilter));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sort, stopsFilter]);
-
-  // ---------- helpers front ----------
-  function applyClientSortAndFilter(
-    list: NormalizedOffer[],
-    how: "price" | "duration",
-    filter: "all" | "direct" | "stops"
-  ) {
-    let out = [...list];
-    if (filter === "direct") out = out.filter((o) => o.stops === 0);
-    if (filter === "stops") out = out.filter((o) => o.stops > 0);
-
-    out.sort((a, b) =>
-      how === "price"
-        ? (a.price ?? Infinity) - (b.price ?? Infinity)
-        : (a.durationMin ?? Infinity) - (b.durationMin ?? Infinity)
-    );
-    return out;
-  }
-
-  function handlePickDay(ymd: string) {
-    setSelectedDate(ymd);
-    setDate(ymd);
-    void searchFlights(ymd);
-  }
-
-  // couleurs calendrier par quartiles
-  const priceThresholds = useMemo(() => {
-    const arr = Object.values(calendar)
-      .filter((c) => c.disponible && typeof c.prix === "number")
-      .map((c) => c.prix as number)
-      .sort((a, b) => a - b);
-    if (arr.length === 0) return null;
-    const q = (p: number) => arr[Math.floor((arr.length - 1) * p)];
-    return {
-      q25: q(0.25),
-      q50: q(0.5),
-      q75: q(0.75),
-    };
-  }, [calendar]);
-
-  function priceClass(p?: number | null, available?: boolean) {
-    if (!available) return "bg-gray-100 text-gray-400 dark:bg-neutral-800";
-    if (p == null || priceThresholds == null)
-      return "bg-gray-100 dark:bg-neutral-800";
-    const { q25, q50, q75 } = priceThresholds;
-    if (p <= q25) return "bg-green-100 text-green-900";
-    if (p <= q50) return "bg-emerald-100 text-emerald-900";
-    if (p <= q75) return "bg-amber-100 text-amber-900";
-    return "bg-rose-100 text-rose-900";
-  }
-
-  // vue calendrier (mois)
+  // ----- Calendrier (données dérivées) -----
   const monthMeta = useMemo(() => {
-    const [yy, mm] = currentMonth.split("-").map((n) => parseInt(n, 10));
-    const first = new Date(yy, (mm || 1) - 1, 1);
-    const daysInMonth = new Date(yy, (mm || 1), 0).getDate();
-    const firstWeekday = (first.getDay() + 6) % 7; // Lundi=0
-    return { yy, mm, daysInMonth, firstWeekday };
+    const [yy, mm] = currentMonth.split("-").map((s) => parseInt(s, 10));
+    const year = yy;
+    const monthIndex = mm - 1;
+    const first = new Date(year, monthIndex, 1);
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const firstWeekday = (first.getDay() + 6) % 7; // Lundi = 0
+    return { year, monthIndex, daysInMonth, firstWeekday };
   }, [currentMonth]);
 
-  function prevMonth() {
-    const d = fromYMD(currentMonth + "-01");
-    d.setMonth(d.getMonth() - 1);
-    setCurrentMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-  }
-  function nextMonth() {
-    const d = fromYMD(currentMonth + "-01");
-    d.setMonth(d.getMonth() + 1);
-    setCurrentMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-  }
+  // min/max prix du mois (pour l’échelle de couleur)
+  const [minPrice, maxPrice] = useMemo(() => {
+    const vals = Object.values(calendar)
+      .filter((c) => c.disponible && typeof c.prix === "number")
+      .map((c) => c.prix as number);
+    if (vals.length === 0) return [0, 0] as const;
+    return [Math.min(...vals), Math.max(...vals)] as const;
+  }, [calendar]);
 
   const weekAround = useMemo(() => {
-    const pivot = selectedDate ? fromYMD(selectedDate) : fromYMD(date);
+    // 3 jours avant/après la date sélectionnée
+    const base = selectedDate ? new Date(selectedDate) : new Date(date);
     const out: string[] = [];
     for (let i = -3; i <= 3; i++) {
-      const d = new Date(pivot);
-      d.setDate(d.getDate() + i);
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
       out.push(toYMD(d));
     }
     return out;
   }, [selectedDate, date]);
 
-  // ---------- UI ----------
+  // Navigation mois/semaines
+  const prevMonth = () => {
+    const [yy, mm] = currentMonth.split("-").map((s) => parseInt(s, 10));
+    const d = new Date(yy, mm - 1, 1);
+    d.setMonth(d.getMonth() - 1);
+    setCurrentMonth(toYM(d));
+  };
+  const nextMonth = () => {
+    const [yy, mm] = currentMonth.split("-").map((s) => parseInt(s, 10));
+    const d = new Date(yy, mm - 1, 1);
+    d.setMonth(d.getMonth() + 1);
+    setCurrentMonth(toYM(d));
+  };
+
+  const prevWeek = () => {
+    const base = selectedDate ? new Date(selectedDate) : new Date(date);
+    base.setDate(base.getDate() - 7);
+    const ymd = toYMD(base);
+    setSelectedDate(ymd);
+    setDate(ymd);
+  };
+  const nextWeek = () => {
+    const base = selectedDate ? new Date(selectedDate) : new Date(date);
+    base.setDate(base.getDate() + 7);
+    const ymd = toYMD(base);
+    setSelectedDate(ymd);
+    setDate(ymd);
+  };
+
+  const handlePickDay = (ymd: string, autoSearch = true) => {
+    setSelectedDate(ymd);
+    setDate(ymd);
+    if (autoSearch) void searchFlights(ymd);
+  };
+
+  // Rendu mini calendrier (popup sur le champ date)
+  const daysOfCurrentMonth = useMemo(() => {
+    const arr: string[] = [];
+    const [yy, mm] = currentMonth.split("-").map((s) => parseInt(s, 10));
+    const last = new Date(yy, mm, 0).getDate();
+    for (let d = 1; d <= last; d++) {
+      arr.push(`${currentMonth}-${String(d).padStart(2, "0")}`);
+    }
+    return arr;
+  }, [currentMonth]);
+
+  // ----- UI -----
   return (
-    <main className="max-w-5xl mx-auto p-4 text-sm dark:text-neutral-100">
+    <main className="p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">Comparateur — vols</h1>
 
-      {/* Form */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+      <form
+        className="grid grid-cols-1 md:grid-cols-[1fr,1fr,180px,180px,1fr] gap-2 items-end"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void searchFlights(date);
+        }}
+      >
+        {/* Origine */}
         <div>
-          <label className="block text-xs mb-1">Origine</label>
+          <label className="block text-sm mb-1">Origine</label>
           <input
-            className="w-full border p-2 rounded dark:bg-neutral-800"
+            className="w-full border p-2 rounded dark:bg-neutral-800 dark:text-white"
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
-            placeholder="PAR, CDG, ORY…"
+            placeholder="PAR"
           />
         </div>
+
+        {/* Destination */}
         <div>
-          <label className="block text-xs mb-1">Destination</label>
+          <label className="block text-sm mb-1">Destination</label>
           <input
-            className="w-full border p-2 rounded dark:bg-neutral-800"
+            className="w-full border p-2 rounded dark:bg-neutral-800 dark:text-white"
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
-            placeholder="BCN…"
+            placeholder="BCN"
           />
         </div>
-        <div>
-          <label className="block text-xs mb-1">Date</label>
+
+        {/* Date + mini calendrier */}
+        <div ref={wrapperRef} className="relative">
+          <label className="block text-sm mb-1">Date</label>
           <input
             type="date"
-            className="w-full border p-2 rounded dark:bg-neutral-800"
+            className="w-full border p-2 rounded dark:bg-neutral-800 dark:text-white"
             value={date}
-            onChange={(e) => {
-              setDate(e.target.value);
-              setSelectedDate(e.target.value);
-            }}
+            onChange={(e) => setDate(e.target.value)}
+            onFocus={() => setShowMini(true)}
           />
+          {showMini && (
+            <div className="absolute z-40 mt-2 p-2 bg-white dark:bg-neutral-900 border rounded shadow w-64">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium">{currentMonth}</div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="px-2 py-1 border rounded text-xs"
+                    onClick={prevMonth}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    className="px-2 py-1 border rounded text-xs"
+                    onClick={nextMonth}
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {daysOfCurrentMonth.map((d, i) => {
+                  const info = calendar[d] ?? { prix: null, disponible: false };
+                  const cls = classByPrice(
+                    typeof info.prix === "number" ? info.prix : null,
+                    minPrice,
+                    maxPrice,
+                    info.disponible
+                  );
+                  const isSel = selectedDate === d;
+                  return (
+                    <button
+                      type="button"
+                      key={d + i}
+                      onClick={() => {
+                        setShowMini(false);
+                        handlePickDay(d);
+                      }}
+                      disabled={!info.disponible}
+                      className={`p-1 rounded flex flex-col items-center justify-center ${cls} ${
+                        isSel ? "ring-2 ring-blue-500" : ""
+                      } ${!info.disponible ? "opacity-50 cursor-not-allowed" : "hover:opacity-95"}`}
+                    >
+                      <div className="text-xs font-medium dark:text-neutral-100">
+                        {Number(d.slice(-2))}
+                      </div>
+                      <div className="text-sm font-bold leading-none mt-0.5 text-indigo-800 dark:text-indigo-200">
+                        {info.disponible && typeof info.prix === "number" ? `${Math.round(info.prix)} €` : "—"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex justify-between text-xs">
+                <button
+                  type="button"
+                  className="px-2 py-1 border rounded"
+                  onClick={() => setShowMini(false)}
+                >
+                  Fermer
+                </button>
+                <button
+                  type="button"
+                  className="px-2 py-1 border rounded"
+                  onClick={() => {
+                    setShowMini(false);
+                    setView("month");
+                  }}
+                >
+                  Voir mois
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Tri */}
         <div>
-          <label className="block text-xs mb-1">Tri</label>
+          <label className="block text-sm mb-1">Tri</label>
           <select
-            className="w-full border p-2 rounded dark:bg-neutral-800"
+            className="border p-2 rounded w-full dark:bg-neutral-800 dark:text-white"
             value={sort}
-            onChange={(e) =>
-              setSort(e.target.value as "price" | "duration")
-            }
+            onChange={(e) => setSort(e.target.value as "price" | "duration")}
           >
             <option value="price">Prix croissant</option>
             <option value="duration">Durée la plus courte</option>
           </select>
         </div>
+
+        {/* Boutons */}
         <div className="flex gap-2">
           <button
-            onClick={() => {
-              setSelectedDate(date);
-              void searchFlights(date);
-            }}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white p-2 rounded flex items-center justify-center gap-2"
+            type="submit"
+            className="w-full bg-blue-600 text-white p-2 rounded flex items-center justify-center gap-2"
           >
             {loading && (
               <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
             )}
             Rechercher
           </button>
+          <label className="ml-2 inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={directOnly}
+              onChange={(e) => setDirectOnly(e.target.checked)}
+            />
+            Direct
+          </label>
         </div>
-      </div>
+      </form>
 
-      {/* Filtres secondaires */}
-      <div className="mt-3 flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs">Vols :</span>
-          <select
-            className="border p-1 rounded dark:bg-neutral-800"
-            value={stopsFilter}
-            onChange={(e) =>
-              setStopsFilter(e.target.value as "all" | "direct" | "stops")
-            }
-          >
-            <option value="all">Tous vols</option>
-            <option value="direct">Direct</option>
-            <option value="stops">Avec escale(s)</option>
-          </select>
-        </div>
-
-        <div className="ml-auto flex gap-2">
-          <button
-            className={`px-3 py-1 rounded border ${
-              view === "month" ? "bg-black text-white" : ""
-            }`}
-            onClick={() => setView("month")}
-          >
-            Mois
-          </button>
-          <button
-            className={`px-3 py-1 rounded border ${
-              view === "week" ? "bg-black text-white" : ""
-            }`}
-            onClick={() => setView("week")}
-          >
-            Semaine
-          </button>
+      {/* Switch vue calendrier */}
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setView("month")}
+          className={`px-3 py-1 rounded border ${view === "month" ? "bg-black text-white" : ""}`}
+        >
+          Mois
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("week")}
+          className={`px-3 py-1 rounded border ${view === "week" ? "bg-black text-white" : ""}`}
+        >
+          Semaine
+        </button>
+        <div className="ml-auto flex items-center gap-1 text-xs text-gray-500 dark:text-neutral-400">
+          <span className="inline-block h-3 w-3 rounded bg-emerald-200 dark:bg-emerald-900/40" /> pas cher
+          <span className="inline-block h-3 w-3 rounded bg-amber-200 dark:bg-amber-900/40 ml-3" /> moyen
+          <span className="inline-block h-3 w-3 rounded bg-rose-200 dark:bg-rose-900/40 ml-3" /> cher
         </div>
       </div>
 
       {/* Calendrier */}
-      <div className="mt-3">
+      <section className="mt-3">
         {view === "month" ? (
-          <MonthGrid
-            currentMonth={currentMonth}
-            onPrev={prevMonth}
-            onNext={nextMonth}
-            calendar={calendar}
-            priceClass={priceClass}
-            selectedDate={selectedDate}
-            onPick={handlePickDay}
-            meta={monthMeta}
-            loading={calendarLoading}
-            error={calendarError}
-          />
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <button onClick={prevMonth} className="px-2 py-1 border rounded" type="button">
+                ◀
+              </button>
+              <div className="font-semibold">{currentMonth}</div>
+              <button onClick={nextMonth} className="px-2 py-1 border rounded" type="button">
+                ▶
+              </button>
+            </div>
+
+            {calendarLoading ? (
+              <p className="text-sm text-gray-600 dark:text-neutral-300">Chargement du calendrier…</p>
+            ) : calendarError ? (
+              <p className="text-red-600 dark:text-rose-300">{calendarError}</p>
+            ) : (
+              <MonthGrid
+                currentMonth={currentMonth}
+                firstWeekday={monthMeta.firstWeekday}
+                daysInMonth={monthMeta.daysInMonth}
+                calendar={calendar}
+                minPrice={minPrice}
+                maxPrice={maxPrice}
+                selectedDate={selectedDate}
+                onPickDay={handlePickDay}
+              />
+            )}
+          </div>
         ) : (
-          <WeekStrip
-            week={weekAround}
-            calendar={calendar}
-            priceClass={priceClass}
-            selectedDate={selectedDate}
-            onPick={handlePickDay}
-            loading={calendarLoading}
-            error={calendarError}
-          />
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <button onClick={prevWeek} className="px-2 py-1 border rounded" type="button">
+                ◀ Semaine
+              </button>
+              <div className="font-semibold">
+                Semaine autour de {selectedDate ?? "—"}
+              </div>
+              <button onClick={nextWeek} className="px-2 py-1 border rounded" type="button">
+                Semaine ▶
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+              {weekAround.map((ymd) => {
+                const info = calendar[ymd] ?? { prix: null, disponible: false };
+                const cls = classByPrice(
+                  typeof info.prix === "number" ? info.prix : null,
+                  minPrice,
+                  maxPrice,
+                  info.disponible
+                );
+                const d = new Date(ymd);
+                const isSel = selectedDate === ymd;
+                return (
+                  <button
+                    key={ymd}
+                    type="button"
+                    onClick={() => handlePickDay(ymd)}
+                    disabled={!info.disponible}
+                    className={`p-3 rounded border flex flex-col items-center justify-center ${cls} ${
+                      isSel ? "ring-4 ring-blue-500" : ""
+                    } ${!info.disponible ? "cursor-not-allowed opacity-50" : "hover:opacity-95"}`}
+                  >
+                    <span className="text-sm font-semibold dark:text-neutral-100">{d.getDate()}</span>
+                    <span className="text-base font-bold mt-1 text-indigo-800 dark:text-indigo-200">
+                      {info.disponible && typeof info.prix === "number" ? `${Math.round(info.prix)} €` : "—"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
-      </div>
+      </section>
 
       {/* Résultats */}
-      <div className="mt-4">
-        {errorMsg && (
-          <p className="text-red-600 dark:text-rose-300">{errorMsg}</p>
+      <section className="mt-6">
+        {error && <p className="text-red-600 dark:text-rose-300 mb-2">{error}</p>}
+        {loading && (
+          <div className="text-sm text-gray-600 dark:text-neutral-300">Recherche en cours…</div>
         )}
-        {!loading && !results.length && (
-          <p className="text-gray-600 dark:text-neutral-300">
+        {!loading && results.length === 0 && (
+          <div className="text-sm text-gray-500 dark:text-neutral-400">
             Aucun résultat pour cette date (ou pas encore de recherche).
-          </p>
+          </div>
         )}
 
         <div className="space-y-3">
-          {results.map((r, i) => (
-            <FlightCard key={i} offer={r} />
-          ))}
+          {results.map((r, i) => {
+            const prixNum = typeof r.prix === "number" ? r.prix : Number(r.prix ?? 0);
+            const umBadge = r.um_ok ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                🧒 UM
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-rose-100 text-rose-800 line-through dark:bg-rose-900/40 dark:text-rose-200">
+                🧒 UM
+              </span>
+            );
+            const petBadge = r.animal_ok ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                🐾 Animaux
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-rose-100 text-rose-800 line-through dark:bg-rose-900/40 dark:text-rose-200">
+                🐾 Animaux
+              </span>
+            );
+
+            return (
+              <div
+                key={i}
+                className="border rounded-lg p-4 bg-white dark:bg-neutral-900"
+              >
+                {/* Ligne itinéraire */}
+                <div className="text-sm text-gray-700 dark:text-neutral-200 mb-2">
+                  <span className="font-medium">{r.depart}</span>{" "}
+                  <span className="mx-2">—</span>
+                  <span className="font-medium">{r.arrivee}</span>{" "}
+                  <span className="mx-2">•</span>{" "}
+                  <span>Durée {parsePTtoHM(r.duree || "PT0M")}</span>{" "}
+                  <span className="mx-2">•</span>{" "}
+                  <span>{r.escales === 0 ? "Direct" : `${r.escales} escale(s)`}</span>
+                </div>
+
+                {/* Heures + compagnie */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-base dark:text-white">
+                    <span className="font-semibold">{parseISOLocalHM(r.heure_depart)}</span>{" "}
+                    →{" "}
+                    <span className="font-semibold">{parseISOLocalHM(r.heure_arrivee)}</span>
+                    <span className="ml-3 text-sm text-gray-600 dark:text-neutral-300">
+                      Compagnie : {r.compagnie || "—"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">{umBadge}{petBadge}</div>
+
+                  <div className="text-lg font-bold">{euro(prixNum)}</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
-      </div>
+      </section>
     </main>
   );
 }
 
-// ---------- sous-composants ----------
-
+// Composant grille mois séparé pour rester lisible
 function MonthGrid(props: {
   currentMonth: string;
-  onPrev: () => void;
-  onNext: () => void;
+  firstWeekday: number;
+  daysInMonth: number;
   calendar: CalendarMap;
-  priceClass: (p?: number | null, a?: boolean) => string;
+  minPrice: number;
+  maxPrice: number;
   selectedDate: string | null;
-  onPick: (ymd: string) => void;
-  meta: { yy: number; mm: number; daysInMonth: number; firstWeekday: number };
-  loading: boolean;
-  error: string | null;
+  onPickDay: (ymd: string) => void;
 }) {
   const {
     currentMonth,
-    onPrev,
-    onNext,
+    firstWeekday,
+    daysInMonth,
     calendar,
-    priceClass,
+    minPrice,
+    maxPrice,
     selectedDate,
-    onPick,
-    meta,
-    loading,
-    error,
+    onPickDay,
   } = props;
 
-  const blanks = Array.from({ length: meta.firstWeekday });
-  const days = Array.from({ length: meta.daysInMonth }, (_, idx) => idx + 1);
-
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        <button onClick={onPrev} className="px-2 py-1 border rounded">
-          ◀
-        </button>
-        <div className="font-semibold">{currentMonth}</div>
-        <button onClick={onNext} className="px-2 py-1 border rounded">
-          ▶
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="p-3 text-gray-600 dark:text-neutral-300">
-          Chargement du calendrier…
-        </div>
-      ) : error ? (
-        <p className="text-red-600 dark:text-rose-300">{error}</p>
-      ) : (
-        <div className="grid grid-cols-7 gap-2">
-          {blanks.map((_, i) => (
-            <div key={`b${i}`} />
-          ))}
-          {days.map((day) => {
-            const ymd = `${currentMonth}-${String(day).padStart(2, "0")}`;
-            const info = calendar[ymd];
-            const cls = priceClass(info?.prix ?? null, info?.disponible);
-            const isSel = selectedDate === ymd;
-            return (
-              <button
-                type="button"
-                key={ymd}
-                onClick={() => onPick(ymd)}
-                disabled={!info || !info.disponible}
-                className={`p-3 rounded border flex flex-col items-center justify-center ${cls} ${
-                  isSel ? "ring-4 ring-blue-500" : ""
-                } ${!info || !info.disponible ? "cursor-not-allowed" : "hover:opacity-95"}`}
-              >
-                <span className="text-sm font-semibold">{day}</span>
-                <span className="text-base font-bold mt-1">
-                  {info?.disponible && typeof info.prix === "number"
-                    ? `${Math.round(info.prix)} €`
-                    : "—"}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function WeekStrip(props: {
-  week: string[];
-  calendar: CalendarMap;
-  priceClass: (p?: number | null, a?: boolean) => string;
-  selectedDate: string | null;
-  onPick: (ymd: string) => void;
-  loading: boolean;
-  error: string | null;
-}) {
-  const { week, calendar, priceClass, selectedDate, onPick, loading, error } =
-    props;
-
-  if (loading)
-    return (
-      <div className="p-3 text-gray-600 dark:text-neutral-300">
-        Chargement du calendrier…
-      </div>
+  const cells: React.ReactElement[] = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(<div key={`b-${i}`} />);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ymd = `${currentMonth}-${String(day).padStart(2, "0")}`;
+    const info = calendar[ymd] ?? { prix: null, disponible: false };
+    const cls = classByPrice(
+      typeof info.prix === "number" ? info.prix : null,
+      minPrice,
+      maxPrice,
+      info.disponible
     );
-  if (error) return <p className="text-red-600 dark:text-rose-300">{error}</p>;
+    const isSel = selectedDate === ymd;
 
-  return (
-    <div className="grid grid-cols-7 gap-2">
-      {week.map((ymd, i) => {
-        const info = calendar[ymd];
-        const d = new Date(ymd);
-        const cls = priceClass(info?.prix ?? null, info?.disponible);
-        const isSel = selectedDate === ymd;
-        return (
-          <button
-            type="button"
-            key={ymd + i}
-            onClick={() => onPick(ymd)}
-            disabled={!info || !info.disponible}
-            className={`p-3 rounded border flex flex-col items-center justify-center ${cls} ${
-              isSel ? "ring-4 ring-blue-500" : ""
-            } ${!info || !info.disponible ? "cursor-not-allowed" : "hover:opacity-95"}`}
-          >
-            <span className="text-sm font-semibold">{d.getDate()}</span>
-            <span className="text-base font-bold mt-1">
-              {info?.disponible && typeof info.prix === "number"
-                ? `${Math.round(info.prix)} €`
-                : "—"}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function FlightCard({ offer }: { offer: NormalizedOffer }) {
-  const first = offer.segments[0];
-  const last = offer.segments[offer.segments.length - 1];
-
-  return (
-    <div className="border rounded p-3 bg-white dark:bg-neutral-900">
-      {/* header prix + badge UM/Animaux */}
-      <div className="flex items-center gap-2 justify-between">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge
-            ok={offer.um_ok}
-            label="UM"
-            title={offer.um_ok ? "UM accepté" : "UM non accepté"}
-          />
-          <Badge
-            ok={offer.animal_ok}
-            label="Animaux"
-            title={offer.animal_ok ? "Animaux acceptés" : "Animaux non acceptés"}
-          />
-          <span className="text-xs text-gray-500 dark:text-neutral-400">
-            {offer.stops === 0 ? "Direct" : `${offer.stops} escale(s)`}
-          </span>
-          <span className="text-xs text-gray-500 dark:text-neutral-400">
-            Durée: {formatMinutes(offer.durationMin)}
-          </span>
-          {offer.airlines.length > 0 && (
-            <span className="text-xs text-gray-500 dark:text-neutral-400">
-              Compagnie(s) : {offer.airlines.join(", ")}
-            </span>
-          )}
-        </div>
-
-        <div className="text-lg font-bold">{Math.round(offer.price)} €</div>
-      </div>
-
-      {/* timeline segments */}
-      <div className="mt-3 space-y-2">
-        {offer.segments.map((s, idx) => (
-          <div
-            key={idx}
-            className="flex items-center gap-2 text-sm flex-wrap"
-            title={s.duration ? `Durée segment: ${s.duration}` : undefined}
-          >
-            <div className="font-medium">
-              {s.from ?? first?.from ?? "—"} <span className="text-gray-400">({hhmm(s.depart)})</span>
-            </div>
-            <div className="text-gray-400">→</div>
-            <div className="font-medium">
-              {s.to ?? last?.to ?? "—"} <span className="text-gray-400">({hhmm(s.arrive)})</span>
-            </div>
-            {s.carrier && (
-              <span className="ml-2 text-xs rounded px-2 py-0.5 border">
-                {s.carrier}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Badge({ ok, label, title }: { ok: boolean; label: string; title?: string }) {
-  return (
-    <span
-      title={title}
-      className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border ${
-        ok
-          ? "bg-green-50 text-green-700 border-green-300"
-          : "bg-rose-50 text-rose-700 border-rose-300 line-through"
-      }`}
-    >
-      {label}
-    </span>
-  );
-}
-
-// ---------- normalisation robuste ----------
-
-function normalizeOfferSafely(src: any): NormalizedOffer {
-  // 1) récupérer segments selon plusieurs formats possibles
-  let segments: Segment[] = [];
-
-  if (Array.isArray(src?.segments) && src.segments.length) {
-    segments = src.segments.map((s: any) => ({
-      from: s.from ?? s.depart ?? s.origin ?? s.de,
-      to: s.to ?? s.arrive ?? s.destination ?? s.a,
-      depart: s.depart ?? s.heure_depart ?? s.departureTime ?? s.departure,
-      arrive: s.arrive ?? s.heure_arrivee ?? s.arrivalTime ?? s.arrival,
-      carrier: s.carrier ?? s.compagnie ?? s.airline,
-      duration: s.duration ?? s.duree,
-    }));
-  } else if (Array.isArray(src?.vols) && src.vols.length) {
-    // ancien format: vols: [{depart, arrivee, duree, compagnie}]
-    segments = src.vols.map((v: any) => ({
-      from: v.depart,
-      to: v.arrivee,
-      depart: v.heure_depart ?? v.depart,
-      arrive: v.heure_arrivee ?? v.arrivee,
-      carrier: v.compagnie,
-      duration: v.duree,
-    }));
-  } else {
-    // fallback: champs à plat
-    segments = [
-      {
-        from: src.depart ?? src.origin,
-        to: src.arrivee ?? src.destination,
-        depart: src.heure_depart ?? src.depart,
-        arrive: src.heure_arrivee ?? src.arrive,
-        carrier: src.compagnie ?? src.airline,
-        duration: src.duree,
-      },
-    ];
+    cells.push(
+      <button
+        type="button"
+        key={ymd}
+        onClick={() => onPickDay(ymd)}
+        disabled={!info.disponible}
+        className={`p-3 rounded border flex flex-col items-center justify-center ${cls} ${
+          isSel ? "ring-4 ring-blue-500" : ""
+        } ${!info.disponible ? "cursor-not-allowed opacity-50" : "hover:opacity-95"}`}
+      >
+        <span className="text-sm font-semibold dark:text-neutral-100">{day}</span>
+        <span className="text-base font-bold mt-1 text-indigo-800 dark:text-indigo-200">
+          {info.disponible && typeof info.prix === "number" ? `${Math.round(info.prix)} €` : "—"}
+        </span>
+      </button>
+    );
   }
 
-  // 2) durée totale
-  let durationMin: number | null =
-    parseISODurationToMin(src.duree_totale) ?? null;
-
-  // si pas fournie, essayer via somme des segments ou diff globale
-  if (durationMin == null) {
-    const segDur = segments
-      .map((s) => parseISODurationToMin(s.duration))
-      .filter((x) => typeof x === "number") as number[];
-    if (segDur.length === segments.length && segDur.length > 0) {
-      durationMin = segDur.reduce((a, b) => a + b, 0);
-    } else {
-      const first = segments[0]?.depart ? new Date(segments[0].depart) : null;
-      const last = segments[segments.length - 1]?.arrive
-        ? new Date(segments[segments.length - 1].arrive)
-        : null;
-      if (first && last && !isNaN(first.getTime()) && !isNaN(last.getTime())) {
-        durationMin = Math.max(0, Math.round((+last - +first) / 60000));
-      }
-    }
-  }
-
-  const airlinesSet = new Set<string>();
-  segments.forEach((s) => s.carrier && airlinesSet.add(String(s.carrier)));
-
-  return {
-    price: Number(src.prix ?? src.price ?? src.total ?? 0),
-    segments,
-    stops: Math.max(0, segments.length - 1),
-    durationMin,
-    um_ok: !!src.um_ok,
-    animal_ok: !!src.animal_ok,
-    airlines: Array.from(airlinesSet),
-  };
+  return <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">{cells}</div>;
 }
