@@ -1,7 +1,4 @@
 #!/bin/bash
-# Script pour démarrer le backend FastAPI
-
-cd "$(dirname "$0")"   # Aller dans le dossier backend
-source venv/bin/activate  # Activer le venv
-python3 -m uvicorn main:app --reload
-
+cd "$(dirname "$0")"
+source venv/bin/activate
+exec python3 -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
