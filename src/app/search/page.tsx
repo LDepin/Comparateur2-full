@@ -146,7 +146,7 @@ export default function SearchPage() {
       );
       const data = (await res.json()) as { calendar: CalendarMap };
       setCalendar(data.calendar || {});
-    } catch (e: any) {
+    } catch  {
       setCalendarError("Impossible de charger le calendrier.");
     } finally {
       setCalendarLoading(false);
@@ -183,7 +183,7 @@ export default function SearchPage() {
       });
 
       setResults(list);
-    } catch (e: any) {
+    } catch  {
       setError("Échec de la recherche.");
       setResults([]);
     } finally {

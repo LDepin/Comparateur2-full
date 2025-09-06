@@ -1,27 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+export const dynamic = "force-dynamic";
 
-export const dynamic = "force-dynamic"; // pas de cache
-const API_BASE = process.env.API_BASE!; // défini dans Vercel + .env.local
+const BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
 
 export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const origin = searchParams.get("origin") ?? "";
+  const destination = searchParams.get("destination") ?? "";
+  const date = searchParams.get("date") ?? "";
+
+  const url =
+    `${BASE}/search?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&date=${encodeURIComponent(date)}`;
+
   try {
-    if (!API_BASE) {
-      return NextResponse.json({ error: "API_BASE manquant" }, { status: 500 });
-    }
-    const { searchParams } = new URL(req.url);
-    const origin = searchParams.get("origin");
-    const destination = searchParams.get("destination");
-    const date = searchParams.get("date");
-
-    if (!origin || !destination || !date) {
-      return NextResponse.json({ error: "origin, destination, date requis" }, { status: 400 });
-    }
-
-    const url = `${API_BASE}/search?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&date=${encodeURIComponent(date)}`;
-    const r = await fetch(url, { cache: "no-store", headers: { accept: "application/json" } });
-    const data = await r.json();
-    return NextResponse.json(data, { status: r.status });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "proxy error" }, { status: 500 });
+    const r = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
+    const data = await r.json().catch(() => ({ results: [] } as unknown));
+    return NextResponse.json(data as unknown, { status: r.ok ? r.status : 500 });
+  } catch {
+    return NextResponse.json({ results: [] }, { status: 502 });
   }
 }
