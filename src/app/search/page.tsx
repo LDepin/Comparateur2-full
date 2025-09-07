@@ -18,10 +18,10 @@ type Flight = {
   prix: number | string;
   depart: string;
   arrivee: string;
-  heure_depart: string;   // ISO
-  heure_arrivee: string;  // ISO
-  duree?: string;         // "PT1H56M" ou "1h56"
-  escales: number;
+  heure_depart?: string;   // ISO
+  heure_arrivee?: string;  // ISO
+  duree?: string;          // "PT1H56M" ou "1h56"
+  escales?: number;
   um_ok?: boolean;
   animal_ok?: boolean;
   segments?: Segment[];
@@ -54,7 +54,7 @@ const monthStr = (d: Date) => {
 };
 
 const firstWeekdayOfMonth = (year: number, monthIndex0: number) => {
-  // Lundi=0 … Dimanche=6 (getDay() donne 0=Dimanche)
+  // Lundi=0 … Dimanche=6 (getDay() retourne 0=Dimanche)
   const wd = new Date(year, monthIndex0, 1).getDay();
   return (wd + 6) % 7;
 };
@@ -62,7 +62,8 @@ const firstWeekdayOfMonth = (year: number, monthIndex0: number) => {
 const daysInMonth = (year: number, monthIndex0: number) =>
   new Date(year, monthIndex0 + 1, 0).getDate();
 
-const fmtTime = (iso: string) => {
+const fmtTime = (iso?: string) => {
+  if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
@@ -85,9 +86,9 @@ const parseISODur = (s?: string): { h?: number; m?: number; txt: string } => {
   return { txt: s };
 };
 
-const minutesBetween = (aIso: string, bIso: string) => {
-  const a = new Date(aIso).getTime();
-  const b = new Date(bIso).getTime();
+const minutesBetween = (aIso?: string, bIso?: string) => {
+  const a = aIso ? new Date(aIso).getTime() : NaN;
+  const b = bIso ? new Date(bIso).getTime() : NaN;
   if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
   return Math.max(0, Math.round((b - a) / 60000));
 };
@@ -107,22 +108,26 @@ const classByPrice = (price?: number | null, ok?: boolean) => {
   return "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200";
 };
 
+/** Construit des segments même si le backend ne fournit pas `segments` */
+const buildSegments = (f: Flight): Segment[] => {
+  if (Array.isArray(f.segments) && f.segments.length > 0) return f.segments;
+  // fallback : 1 tronçon minimal
+  return [
+    {
+      from: f.depart,
+      to: f.arrivee,
+      dep: f.heure_depart ?? "",
+      arr: f.heure_arrivee ?? "",
+      carrier: f.compagnie,
+    },
+  ];
+};
+
 /** -----------------------------
- *  Timeline par tronçon
+ *  Timeline par tronçon (avec fallback texte)
  *  ----------------------------- */
 function FlightTimeline({ flight }: { flight: Flight }) {
-  const segs: Segment[] = useMemo(() => {
-    if (Array.isArray(flight.segments) && flight.segments.length > 0) return flight.segments;
-    return [
-      {
-        from: flight.depart,
-        to: flight.arrivee,
-        dep: flight.heure_depart,
-        arr: flight.heure_arrivee,
-        carrier: flight.compagnie,
-      },
-    ];
-  }, [flight]);
+  const segs = useMemo(() => buildSegments(flight), [flight]);
 
   const totalTxt = useMemo(() => {
     if (flight.duree) return parseISODur(flight.duree).txt;
@@ -132,8 +137,12 @@ function FlightTimeline({ flight }: { flight: Flight }) {
     return minutesToTxt(tMin);
   }, [flight.duree, segs]);
 
+  const firstSeg = segs[0];
+  const lastSeg = segs[segs.length - 1];
+
   return (
     <div className="w-full">
+      {/* Ligne graphique */}
       <div className="flex items-start gap-3 text-sm">
         {segs.map((s, i) => {
           const durMin = minutesBetween(s.dep, s.arr);
@@ -142,7 +151,7 @@ function FlightTimeline({ flight }: { flight: Flight }) {
           return (
             <React.Fragment key={`${s.from}-${s.to}-${i}`}>
               <div className="flex flex-col items-start min-w-[64px]">
-                <div className="font-semibold">{s.from}</div>
+                <div className="font-semibold">{s.from || "—"}</div>
                 <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.dep)}</div>
               </div>
 
@@ -155,7 +164,7 @@ function FlightTimeline({ flight }: { flight: Flight }) {
               </div>
 
               <div className="flex flex-col items-end min-w-[64px]">
-                <div className="font-semibold">{s.to}</div>
+                <div className="font-semibold">{s.to || "—"}</div>
                 <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.arr)}</div>
               </div>
 
@@ -169,12 +178,22 @@ function FlightTimeline({ flight }: { flight: Flight }) {
         })}
       </div>
 
+      {/* Fallback / résumé texte toujours visible */}
+      <div className="mt-2 text-xs text-neutral-700 dark:text-neutral-200">
+        <span className="font-medium">{firstSeg.from || "—"} {fmtTime(firstSeg.dep)}</span>
+        {" "}<span>→</span>{" "}
+        <span className="font-medium">{lastSeg.to || "—"} {fmtTime(lastSeg.arr)}</span>
+        <span className="ml-2">• Durée totale : {totalTxt}</span>
+        <span className="ml-2">• {flight.escales === 0 ? "Direct" : `${flight.escales ?? Math.max(0, segs.length - 1)} escale(s)`}</span>
+      </div>
+
+      {/* Badges */}
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-neutral-700 dark:text-neutral-200">
           ⏱ {totalTxt}
         </span>
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5">
-          ✈️ {flight.escales === 0 ? "Direct" : `${flight.escales} escale(s)`}
+          ✈️ {flight.escales === 0 ? "Direct" : `${flight.escales ?? Math.max(0, segs.length - 1)} escale(s)`}
         </span>
         <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${flight.um_ok ? "border-emerald-500 text-emerald-700 dark:text-emerald-300" : "opacity-60"}`}>
           🧒 UM
@@ -240,7 +259,7 @@ export default function SearchPage() {
     window.history.replaceState(null, "", `/search?${params.toString()}`);
   };
 
-  /** Fetch calendrier (avec overrides possibles pour initialisation) */
+  /** Fetch calendrier (fusionne, n’écrase pas) */
   const fetchCalendar = async (monthYYYYMM: string, o?: string, d?: string) => {
     try {
       setCalendarError(null);
@@ -252,16 +271,23 @@ export default function SearchPage() {
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { calendar: CalendarMap };
-      setCalendar(data.calendar || {});
+      setCalendar((prev) => {
+        const merged: CalendarMap = { ...prev, ...(data.calendar || {}) };
+        // si on a déjà calculé le min du jour sélectionné, on le préserve
+        if (selectedDate && prev[selectedDate]) {
+          merged[selectedDate] = prev[selectedDate]!;
+        }
+        return merged;
+      });
     } catch {
       setCalendarError("Impossible de charger le calendrier.");
-      setCalendar({});
+      // on ne vide pas tout pour ne pas perdre un min déjà posé
     } finally {
       setCalendarLoading(false);
     }
   };
 
-  /** Search (avec overrides init) + aligne le prix de la cellule du jour sélectionné */
+  /** Search (calcule min et aligne la case du jour) */
   const searchFlights = async (ymd: string, o?: string, d?: string) => {
     try {
       setError(null);
@@ -277,11 +303,13 @@ export default function SearchPage() {
       const data = (await res.json()) as { results: Flight[] };
       let list = Array.isArray(data.results) ? data.results : [];
 
-      // normalisation prix
-      list = list.map((f) => ({
-        ...f,
-        prix: typeof f.prix === "string" ? Number(f.prix) : f.prix,
-      }));
+      // normalisation prix + segments + escales
+      list = list.map((f) => {
+        const prixNum = typeof f.prix === "string" ? Number(f.prix) : f.prix;
+        const segs = buildSegments(f);
+        const escales = typeof f.escales === "number" ? f.escales : Math.max(0, segs.length - 1);
+        return { ...f, prix: prixNum, segments: segs, escales };
+      });
 
       // filtre direct
       if (directOnly) {
@@ -302,33 +330,26 @@ export default function SearchPage() {
 
       setResults(list);
 
-      // 🔄 aligne le prix mini du jour sélectionné avec la liste
+      // min du jour sélectionné => reflété dans le calendrier
       const min = list.reduce((acc, f) => {
         const p = Number(f.prix);
         return Number.isFinite(p) ? Math.min(acc, p) : acc;
       }, Infinity);
 
-      if (Number.isFinite(min)) {
-        setCalendar((prev) => ({
-          ...prev,
-          [ymd]: {
-            prix: Math.round(min),
-            disponible: list.length > 0,
-          },
-        }));
-      } else {
-        // si aucun résultat, marque indispo
-        setCalendar((prev) => ({
-          ...prev,
-          [ymd]: {
-            prix: null,
-            disponible: false,
-          },
-        }));
-      }
+      setCalendar((prev) => ({
+        ...prev,
+        [ymd]: {
+          prix: Number.isFinite(min) ? Math.round(min) : null,
+          disponible: list.length > 0,
+        },
+      }));
     } catch {
       setError("Échec de la recherche.");
       setResults([]);
+      setCalendar((prev) => ({
+        ...prev,
+        [ymd]: { prix: null, disponible: false },
+      }));
     } finally {
       setLoading(false);
     }
@@ -339,6 +360,7 @@ export default function SearchPage() {
     setSelectedDate(ymd);
     setDate(ymd);
     setShowMini(false);
+    // d’abord on lance la recherche (le calendrier a déjà été chargé pour le mois)
     void searchFlights(ymd);
     syncURL();
   };
@@ -372,95 +394,90 @@ export default function SearchPage() {
     };
   }, []);
 
-  /** INIT : lit l’URL, met l’état, et lance fetch + search avec ces valeurs */
+  /** INIT : lit l’URL, met l’état, puis enchaîne calendrier -> recherche (séquencé) */
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const sp = new URLSearchParams(window.location.search);
+    (async () => {
+      if (typeof window === "undefined") return;
+      const sp = new URLSearchParams(window.location.search);
 
-    const o = (sp.get("origin") ?? origin).toUpperCase();
-    const d = (sp.get("destination") ?? destination).toUpperCase();
-    const dt = sp.get("date") ?? date;
-    const s = (sp.get("sort") as "price" | "duration") ?? sort;
-    const dir = sp.get("direct") === "1";
-    const v = (sp.get("view") as "month" | "week") ?? view;
+      const o = (sp.get("origin") ?? origin).toUpperCase();
+      const d = (sp.get("destination") ?? destination).toUpperCase();
+      const dt = sp.get("date") ?? date;
+      const s = (sp.get("sort") as "price" | "duration") ?? sort;
+      const dir = sp.get("direct") === "1";
+      const v = (sp.get("view") as "month" | "week") ?? view;
 
-    setOrigin(o);
-    setDestination(d);
-    setDate(dt);
-    setSort(s);
-    setDirectOnly(dir);
-    setView(v);
-    setSelectedDate(dt);
+      setOrigin(o);
+      setDestination(d);
+      setDate(dt);
+      setSort(s);
+      setDirectOnly(dir);
+      setView(v);
+      setSelectedDate(dt);
 
-    const m = monthStr(new Date(dt));
-    void fetchCalendar(m, o, d);
-    void searchFlights(dt, o, d);
+      const m = monthStr(new Date(dt));
+      await fetchCalendar(m, o, d);
+      await searchFlights(dt, o, d); // toujours après le calendrier
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Si on change l’itinéraire, recharge calendrier du mois courant */
+  /** Changement d’itinéraire : recharge calendrier PUIS relance la recherche du jour affiché */
   useEffect(() => {
-    const m = monthStr(new Date(selectedDate ?? date));
-    void fetchCalendar(m);
+    (async () => {
+      const target = selectedDate ?? date;
+      const m = monthStr(new Date(target));
+      await fetchCalendar(m);
+      await searchFlights(target);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination]);
 
-  /** Partage/Copy link */
+  /** Partage/Copy link (HTTPS OK, fallback si besoin) */
   const handleShareLink = async () => {
-  const base =
-    typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
-
-  const params = new URLSearchParams({
-    origin,
-    destination,
-    date,
-    sort,
-    direct: directOnly ? "1" : "0",
-    view,
-  });
-
-  const url = `${base}/search?${params.toString()}`;
-
-  try {
-    // 1) Web Share API si dispo
-    if (typeof navigator !== "undefined" && "share" in navigator) {
-      await (navigator as unknown as {
-        share: (x: { title: string; text: string; url: string }) => Promise<void>;
-      }).share({
-        title: "Comparateur — vols",
-        text: "Résultats de recherche",
-        url,
-      });
-      return;
-    }
-
-    // 2) Clipboard API si dispo (type-safe, sans any)
-    const nav = navigator as Navigator & {
-      clipboard?: { writeText?: (s: string) => Promise<void> };
-    };
-    if (typeof nav.clipboard?.writeText === "function") {
-      await nav.clipboard.writeText(url);
+    const base =
+      typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
+    const params = new URLSearchParams({
+      origin,
+      destination,
+      date,
+      sort,
+      direct: directOnly ? "1" : "0",
+      view,
+    });
+    const url = `${base}/search?${params.toString()}`;
+    try {
+      if (typeof navigator !== "undefined" && "share" in navigator) {
+        await (navigator as unknown as {
+          share: (x: { title: string; text: string; url: string }) => Promise<void>;
+        }).share({
+          title: "Comparateur — vols",
+          text: "Résultats de recherche",
+          url,
+        });
+        return;
+      }
+      const nav = navigator as Navigator & { clipboard?: { writeText?: (s: string) => Promise<void> } };
+      if (typeof nav.clipboard?.writeText === "function") {
+        await nav.clipboard.writeText(url);
+        alert("Lien copié dans le presse-papiers !");
+        return;
+      }
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "absolute";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
       alert("Lien copié dans le presse-papiers !");
-      return;
+    } catch {
+      window.history.replaceState(null, "", `/search?${params.toString()}`);
+      alert("Lien prêt dans la barre d’adresse (copie manuelle).");
     }
-
-    // 3) Fallback (textarea + execCommand)
-    const ta = document.createElement("textarea");
-    ta.value = url;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "absolute";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    alert("Lien copié dans le presse-papiers !");
-  } catch {
-    // Dernier recours : on met l’URL dans la barre d’adresse
-    window.history.replaceState(null, "", `/search?${params.toString()}`);
-    alert("Lien prêt dans la barre d’adresse (copie manuelle).");
-  }
-};
+  };
 
   /** Rendus calendrier */
   const renderMonthView = () => {
@@ -700,7 +717,7 @@ export default function SearchPage() {
               checked={directOnly}
               onChange={(e) => {
                 setDirectOnly(e.target.checked);
-                void searchFlights(date);
+                void searchFlights(selectedDate ?? date);
                 syncURL();
               }}
             />
