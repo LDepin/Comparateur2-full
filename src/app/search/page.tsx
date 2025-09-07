@@ -38,7 +38,7 @@ type CalendarMap = Record<string, CalendarCell>;
 const API_BASE = "/api";
 
 /** -----------------------------
- *  petites utilitaires
+ *  utilitaires date/durée
  *  ----------------------------- */
 const toYMD = (d: Date) => {
   const y = d.getFullYear();
@@ -86,6 +86,21 @@ const parseISODur = (s?: string): { h?: number; m?: number; txt: string } => {
   return { txt: s };
 };
 
+const minutesBetween = (aIso: string, bIso: string) => {
+  const a = new Date(aIso).getTime();
+  const b = new Date(bIso).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, Math.round((b - a) / 60000));
+};
+
+const minutesToTxt = (m: number) => {
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  const s =
+    `${h ? `${h} h` : ""}${h && mm ? " " : ""}${mm ? `${mm} min` : ""}`.trim();
+  return s || "0 min";
+};
+
 const classByPrice = (price?: number | null, ok?: boolean) => {
   if (!ok) return "bg-gray-100 text-gray-400 dark:bg-neutral-800 dark:text-neutral-400";
   if (typeof price !== "number") return "bg-gray-100 text-gray-600 dark:bg-neutral-800 dark:text-neutral-200";
@@ -98,7 +113,7 @@ const classByPrice = (price?: number | null, ok?: boolean) => {
  *  Composant Timeline (vol → escales → arrivée)
  *  ----------------------------- */
 function FlightTimeline({ flight }: { flight: Flight }) {
-  // construit une liste de segments ; si pas fournie, on crée 1 segment
+  // construit la liste des segments ; sinon 1 segment par défaut
   const segs: Segment[] = useMemo(() => {
     if (Array.isArray(flight.segments) && flight.segments.length > 0) return flight.segments;
     return [
@@ -117,50 +132,54 @@ function FlightTimeline({ flight }: { flight: Flight }) {
     if (flight.duree) return parseISODur(flight.duree).txt;
     const first = segs[0];
     const last = segs[segs.length - 1];
-    const t = new Date(last.arr).getTime() - new Date(first.dep).getTime();
-    if (!Number.isFinite(t)) return "—";
-    const min = Math.round(t / 60000);
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    return `${h ? `${h} h` : ""}${h && m ? " " : ""}${m ? `${m} min` : ""}`.trim();
+    const tMin = minutesBetween(first.dep, last.arr);
+    return minutesToTxt(tMin);
   }, [flight.duree, segs]);
 
   return (
     <div className="w-full">
-      {/* stations */}
-      <div className="flex items-center gap-3 text-sm">
-        {segs.map((s, i) => (
-          <React.Fragment key={`${s.from}-${s.to}-${i}`}>
-            <div className="flex flex-col items-start min-w-[64px]">
-              <div className="font-semibold">{s.from}</div>
-              <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.dep)}</div>
-            </div>
+      {/* stations + tronçons */}
+      <div className="flex items-start gap-3 text-sm">
+        {segs.map((s, i) => {
+          const durMin = minutesBetween(s.dep, s.arr);
+          const layoverMin =
+            i < segs.length - 1 ? minutesBetween(segs[i].arr, segs[i + 1].dep) : 0;
 
-            {/* flèche + infos tronçon */}
-            <div className="flex-1">
-              <div className="h-1 rounded bg-neutral-300 dark:bg-neutral-700" />
-              <div className="mt-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-300">
-                <span>{s.carrier ?? flight.compagnie ?? "—"}</span>
-                <span>→ {parseISODur(undefined).txt /* placeholder invisible */}</span>
+          return (
+            <React.Fragment key={`${s.from}-${s.to}-${i}`}>
+              {/* Station départ */}
+              <div className="flex flex-col items-start min-w-[64px]">
+                <div className="font-semibold">{s.from}</div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.dep)}</div>
               </div>
-            </div>
 
-            {/* étape suivante */}
-            <div className="flex flex-col items-end min-w-[64px]">
-              <div className="font-semibold">{s.to}</div>
-              <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.arr)}</div>
-            </div>
-
-            {i < segs.length - 1 && (
-              <div className="px-2 text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-300">
-                escale
+              {/* Tronçon */}
+              <div className="flex-1">
+                <div className="h-1 rounded bg-neutral-300 dark:bg-neutral-700" />
+                <div className="mt-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-300">
+                  <span>{s.carrier ?? flight.compagnie ?? "—"}</span>
+                  <span>{minutesToTxt(durMin)}</span>
+                </div>
               </div>
-            )}
-          </React.Fragment>
-        ))}
+
+              {/* Station arrivée tronçon */}
+              <div className="flex flex-col items-end min-w-[64px]">
+                <div className="font-semibold">{s.to}</div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.arr)}</div>
+              </div>
+
+              {/* Étiquette escale */}
+              {i < segs.length - 1 && (
+                <div className="px-2 text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-300">
+                  escale {minutesToTxt(layoverMin)}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
 
-      {/* résumé */}
+      {/* résumé badges */}
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-neutral-700 dark:text-neutral-200">
           ⏱ {totalTxt}
@@ -367,32 +386,40 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** si on change d’itinéraire ou de vue → recharge calendrier du mois courant */
+  /** si on change d’itinéraire → recharge calendrier du mois courant */
   useEffect(() => {
     const m = monthStr(new Date(selectedDate ?? date));
     void fetchCalendar(m);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination]);
 
-  /** copie le lien de la recherche */
-  const handleCopyLink = async () => {
+  /** Partage lien (Web Share API si dispo) */
+  const handleShareLink = async () => {
+    const base =
+      typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
+    const params = new URLSearchParams({
+      origin,
+      destination,
+      date,
+      sort,
+      direct: directOnly ? "1" : "0",
+      view,
+    });
+    const url = `${base}/search?${params.toString()}`;
     try {
-      const base =
-        typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
-      const params = new URLSearchParams({
-        origin,
-        destination,
-        date,
-        sort,
-        direct: directOnly ? "1" : "0",
-        view,
-      });
-      const url = `${base}/search?${params.toString()}`;
-      await navigator.clipboard.writeText(url);
-      alert("Lien copié dans le presse-papiers !");
+      if (typeof navigator !== "undefined" && "share" in navigator) {
+        await (navigator as any).share({
+          title: "Comparateur — vols",
+          text: "Résultats de recherche",
+          url,
+        });
+      } else {
+        await navigator.clipboard.writeText(url);
+        alert("Lien copié dans le presse-papiers !");
+      }
     } catch {
-      // fallback
-      syncURL();
+      // fallback ultime
+      window.history.replaceState(null, "", `/search?${params.toString()}`);
       alert("Lien prêt dans la barre d’adresse (copie manuelle).");
     }
   };
@@ -692,11 +719,11 @@ export default function SearchPage() {
           </div>
           <button
             type="button"
-            onClick={handleCopyLink}
+            onClick={handleShareLink}
             className="px-3 py-1 rounded border hover:bg-neutral-50 dark:hover:bg-neutral-800"
-            title="Copier un lien partageable de cette recherche"
+            title="Copier/Partager cette recherche"
           >
-            🔗 Copier le lien
+            🔗 Partager
           </button>
         </div>
       </div>
@@ -728,10 +755,10 @@ export default function SearchPage() {
                 <button
                   type="button"
                   className="px-3 py-1 rounded bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700"
-                  onClick={handleCopyLink}
-                  title="Copier cette recherche"
+                  onClick={handleShareLink}
+                  title="Copier/Partager cette recherche"
                 >
-                  Copier
+                  Partager
                 </button>
                 <button
                   type="button"
