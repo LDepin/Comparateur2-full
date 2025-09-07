@@ -3,14 +3,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** -----------------------------
- *  Types robustes (segments optionnels)
+ *  Types
  *  ----------------------------- */
 type Segment = {
-  from: string;      // IATA ou ville
-  to: string;        // IATA ou ville
+  from: string;
+  to: string;
   dep: string;       // ISO 8601
   arr: string;       // ISO 8601
-  carrier?: string;  // code/nom compagnie
+  carrier?: string;
 };
 
 type Flight = {
@@ -24,7 +24,7 @@ type Flight = {
   escales: number;
   um_ok?: boolean;
   animal_ok?: boolean;
-  segments?: Segment[];   // si présent on dessine chaque tronçon
+  segments?: Segment[];
 };
 
 type CalendarCell = {
@@ -34,11 +34,11 @@ type CalendarCell = {
 
 type CalendarMap = Record<string, CalendarCell>;
 
-/** Appelle toujours les proxys Next (/api/...) côté front */
+/** Tous les appels côté front passent par les proxys Next */
 const API_BASE = "/api";
 
 /** -----------------------------
- *  utilitaires date/durée
+ *  Utilitaires
  *  ----------------------------- */
 const toYMD = (d: Date) => {
   const y = d.getFullYear();
@@ -54,8 +54,8 @@ const monthStr = (d: Date) => {
 };
 
 const firstWeekdayOfMonth = (year: number, monthIndex0: number) => {
-  // Lundi=0 … Dimanche=6 (on décale le getDay() natif)
-  const wd = new Date(year, monthIndex0, 1).getDay(); // 0=Dimanche
+  // Lundi=0 … Dimanche=6 (getDay() donne 0=Dimanche)
+  const wd = new Date(year, monthIndex0, 1).getDay();
   return (wd + 6) % 7;
 };
 
@@ -70,7 +70,6 @@ const fmtTime = (iso: string) => {
 
 const parseISODur = (s?: string): { h?: number; m?: number; txt: string } => {
   if (!s) return { txt: "—" };
-  // accepte "PT1H56M" ou "1h56"
   const iso = /^PT(?:(\d+)H)?(?:(\d+)M)?$/i.exec(s);
   if (iso) {
     const h = iso[1] ? parseInt(iso[1], 10) : 0;
@@ -96,8 +95,7 @@ const minutesBetween = (aIso: string, bIso: string) => {
 const minutesToTxt = (m: number) => {
   const h = Math.floor(m / 60);
   const mm = m % 60;
-  const s =
-    `${h ? `${h} h` : ""}${h && mm ? " " : ""}${mm ? `${mm} min` : ""}`.trim();
+  const s = `${h ? `${h} h` : ""}${h && mm ? " " : ""}${mm ? `${mm} min` : ""}`.trim();
   return s || "0 min";
 };
 
@@ -110,10 +108,9 @@ const classByPrice = (price?: number | null, ok?: boolean) => {
 };
 
 /** -----------------------------
- *  Composant Timeline (vol → escales → arrivée)
+ *  Timeline par tronçon
  *  ----------------------------- */
 function FlightTimeline({ flight }: { flight: Flight }) {
-  // construit la liste des segments ; sinon 1 segment par défaut
   const segs: Segment[] = useMemo(() => {
     if (Array.isArray(flight.segments) && flight.segments.length > 0) return flight.segments;
     return [
@@ -127,7 +124,6 @@ function FlightTimeline({ flight }: { flight: Flight }) {
     ];
   }, [flight]);
 
-  // durée totale (si non fournie)
   const totalTxt = useMemo(() => {
     if (flight.duree) return parseISODur(flight.duree).txt;
     const first = segs[0];
@@ -138,22 +134,18 @@ function FlightTimeline({ flight }: { flight: Flight }) {
 
   return (
     <div className="w-full">
-      {/* stations + tronçons */}
       <div className="flex items-start gap-3 text-sm">
         {segs.map((s, i) => {
           const durMin = minutesBetween(s.dep, s.arr);
-          const layoverMin =
-            i < segs.length - 1 ? minutesBetween(segs[i].arr, segs[i + 1].dep) : 0;
+          const layoverMin = i < segs.length - 1 ? minutesBetween(segs[i].arr, segs[i + 1].dep) : 0;
 
           return (
             <React.Fragment key={`${s.from}-${s.to}-${i}`}>
-              {/* Station départ */}
               <div className="flex flex-col items-start min-w-[64px]">
                 <div className="font-semibold">{s.from}</div>
                 <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.dep)}</div>
               </div>
 
-              {/* Tronçon */}
               <div className="flex-1">
                 <div className="h-1 rounded bg-neutral-300 dark:bg-neutral-700" />
                 <div className="mt-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-300">
@@ -162,13 +154,11 @@ function FlightTimeline({ flight }: { flight: Flight }) {
                 </div>
               </div>
 
-              {/* Station arrivée tronçon */}
               <div className="flex flex-col items-end min-w-[64px]">
                 <div className="font-semibold">{s.to}</div>
                 <div className="text-xs text-neutral-500 dark:text-neutral-300">{fmtTime(s.arr)}</div>
               </div>
 
-              {/* Étiquette escale */}
               {i < segs.length - 1 && (
                 <div className="px-2 text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-300">
                   escale {minutesToTxt(layoverMin)}
@@ -179,7 +169,6 @@ function FlightTimeline({ flight }: { flight: Flight }) {
         })}
       </div>
 
-      {/* résumé badges */}
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-neutral-700 dark:text-neutral-200">
           ⏱ {totalTxt}
@@ -199,10 +188,10 @@ function FlightTimeline({ flight }: { flight: Flight }) {
 }
 
 /** -----------------------------
- *  Page principale
+ *  Page
  *  ----------------------------- */
 export default function SearchPage() {
-  // UI + filtres
+  // filtres
   const [origin, setOrigin] = useState("PAR");
   const [destination, setDestination] = useState("BCN");
   const [date, setDate] = useState(toYMD(new Date()));
@@ -210,13 +199,13 @@ export default function SearchPage() {
   const [directOnly, setDirectOnly] = useState(false);
   const [view, setView] = useState<"month" | "week">("month");
 
-  // calendrier
+  // cal
   const [calendar, setCalendar] = useState<CalendarMap>({});
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
-  // mini calendrier
+  // mini cal
   const [showMini, setShowMini] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
@@ -225,7 +214,7 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // mois courant (pour les vues calendrier)
+  // mois courant
   const current = useMemo(() => {
     const d = selectedDate ? new Date(selectedDate) : new Date(date);
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -237,7 +226,7 @@ export default function SearchPage() {
   const firstWd = firstWeekdayOfMonth(year, monthIndex);
   const nbDays = daysInMonth(year, monthIndex);
 
-  /** URL <-> état (partage) */
+  /** URL <-> état */
   const syncURL = () => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams({
@@ -251,34 +240,15 @@ export default function SearchPage() {
     window.history.replaceState(null, "", `/search?${params.toString()}`);
   };
 
-  const loadFromURL = () => {
-    if (typeof window === "undefined") return;
-    const sp = new URLSearchParams(window.location.search);
-    const o = sp.get("origin") ?? origin;
-    const d = sp.get("destination") ?? destination;
-    const dt = sp.get("date") ?? date;
-    const s = (sp.get("sort") as "price" | "duration") ?? sort;
-    const dir = sp.get("direct") === "1";
-    const v = (sp.get("view") as "month" | "week") ?? view;
-
-    setOrigin(o);
-    setDestination(d);
-    setDate(dt);
-    setSort(s);
-    setDirectOnly(dir);
-    setView(v);
-    setSelectedDate(dt);
-  };
-
-  /** fetch calendrier pour un mois YYYY-MM */
-  const fetchCalendar = async (monthYYYYMM: string) => {
+  /** Fetch calendrier (avec overrides possibles pour initialisation) */
+  const fetchCalendar = async (monthYYYYMM: string, o?: string, d?: string) => {
     try {
       setCalendarError(null);
       setCalendarLoading(true);
+      const oo = (o ?? origin).toUpperCase();
+      const dd = (d ?? destination).toUpperCase();
       const res = await fetch(
-        `${API_BASE}/calendar?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(
-          destination
-        )}&month=${encodeURIComponent(monthYYYYMM)}`
+        `${API_BASE}/calendar?origin=${encodeURIComponent(oo)}&destination=${encodeURIComponent(dd)}&month=${encodeURIComponent(monthYYYYMM)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { calendar: CalendarMap };
@@ -291,21 +261,23 @@ export default function SearchPage() {
     }
   };
 
-  /** recherche vols pour une date YYYY-MM-DD */
-  const searchFlights = async (d: string) => {
+  /** Search (avec overrides init) + aligne le prix de la cellule du jour sélectionné */
+  const searchFlights = async (ymd: string, o?: string, d?: string) => {
     try {
       setError(null);
       setLoading(true);
+      const oo = (o ?? origin).toUpperCase();
+      const dd = (d ?? destination).toUpperCase();
+
       const res = await fetch(
-        `${API_BASE}/search?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(
-          destination
-        )}&date=${encodeURIComponent(d)}`
+        `${API_BASE}/search?origin=${encodeURIComponent(oo)}&destination=${encodeURIComponent(dd)}&date=${encodeURIComponent(ymd)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       const data = (await res.json()) as { results: Flight[] };
       let list = Array.isArray(data.results) ? data.results : [];
 
-      // normalisation
+      // normalisation prix
       list = list.map((f) => ({
         ...f,
         prix: typeof f.prix === "string" ? Number(f.prix) : f.prix,
@@ -321,7 +293,6 @@ export default function SearchPage() {
         if (sort === "price") {
           return (Number(a.prix) || 0) - (Number(b.prix) || 0);
         }
-        // durée : tente d'utiliser ISO, sinon approximations
         const da = parseISODur(a.duree).h ?? 0;
         const ma = parseISODur(a.duree).m ?? 0;
         const db = parseISODur(b.duree).h ?? 0;
@@ -330,6 +301,31 @@ export default function SearchPage() {
       });
 
       setResults(list);
+
+      // 🔄 aligne le prix mini du jour sélectionné avec la liste
+      const min = list.reduce((acc, f) => {
+        const p = Number(f.prix);
+        return Number.isFinite(p) ? Math.min(acc, p) : acc;
+      }, Infinity);
+
+      if (Number.isFinite(min)) {
+        setCalendar((prev) => ({
+          ...prev,
+          [ymd]: {
+            prix: Math.round(min),
+            disponible: list.length > 0,
+          },
+        }));
+      } else {
+        // si aucun résultat, marque indispo
+        setCalendar((prev) => ({
+          ...prev,
+          [ymd]: {
+            prix: null,
+            disponible: false,
+          },
+        }));
+      }
     } catch {
       setError("Échec de la recherche.");
       setResults([]);
@@ -338,7 +334,7 @@ export default function SearchPage() {
     }
   };
 
-  /** interactions calendrier */
+  /** Sélection d’un jour */
   const onPickDay = (ymd: string) => {
     setSelectedDate(ymd);
     setDate(ymd);
@@ -359,7 +355,7 @@ export default function SearchPage() {
     setSelectedDate(toYMD(new Date(d.getFullYear(), d.getMonth(), Math.min(15, daysInMonth(d.getFullYear(), d.getMonth())))));
   };
 
-  /** mini calendrier (popover) : fermeture clic extérieur + ESC */
+  /** Fermer mini-cal au clic extérieur + ESC */
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!wrapperRef.current) return;
@@ -376,55 +372,97 @@ export default function SearchPage() {
     };
   }, []);
 
-  /** init : charge URL, mois & recherche */
+  /** INIT : lit l’URL, met l’état, et lance fetch + search avec ces valeurs */
   useEffect(() => {
-    loadFromURL();
-    // premier fetch calendrier et résultats
-    const m = monthStr(new Date(date));
-    void fetchCalendar(m);
-    void searchFlights(date);
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams(window.location.search);
+
+    const o = (sp.get("origin") ?? origin).toUpperCase();
+    const d = (sp.get("destination") ?? destination).toUpperCase();
+    const dt = sp.get("date") ?? date;
+    const s = (sp.get("sort") as "price" | "duration") ?? sort;
+    const dir = sp.get("direct") === "1";
+    const v = (sp.get("view") as "month" | "week") ?? view;
+
+    setOrigin(o);
+    setDestination(d);
+    setDate(dt);
+    setSort(s);
+    setDirectOnly(dir);
+    setView(v);
+    setSelectedDate(dt);
+
+    const m = monthStr(new Date(dt));
+    void fetchCalendar(m, o, d);
+    void searchFlights(dt, o, d);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** si on change d’itinéraire → recharge calendrier du mois courant */
+  /** Si on change l’itinéraire, recharge calendrier du mois courant */
   useEffect(() => {
     const m = monthStr(new Date(selectedDate ?? date));
     void fetchCalendar(m);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination]);
 
-  /** Partage lien (Web Share API si dispo) */
+  /** Partage/Copy link */
   const handleShareLink = async () => {
-    const base =
-      typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
-    const params = new URLSearchParams({
-      origin,
-      destination,
-      date,
-      sort,
-      direct: directOnly ? "1" : "0",
-      view,
-    });
-    const url = `${base}/search?${params.toString()}`;
-    try {
-      if (typeof navigator !== "undefined" && "share" in navigator) {
-        await (navigator as any).share({
-          title: "Comparateur — vols",
-          text: "Résultats de recherche",
-          url,
-        });
-      } else {
-        await navigator.clipboard.writeText(url);
-        alert("Lien copié dans le presse-papiers !");
-      }
-    } catch {
-      // fallback ultime
-      window.history.replaceState(null, "", `/search?${params.toString()}`);
-      alert("Lien prêt dans la barre d’adresse (copie manuelle).");
-    }
-  };
+  const base =
+    typeof window !== "undefined" ? window.location.origin : "https://comparateur2-full-td9e.vercel.app";
 
-  /** rendus calendriers */
+  const params = new URLSearchParams({
+    origin,
+    destination,
+    date,
+    sort,
+    direct: directOnly ? "1" : "0",
+    view,
+  });
+
+  const url = `${base}/search?${params.toString()}`;
+
+  try {
+    // 1) Web Share API si dispo
+    if (typeof navigator !== "undefined" && "share" in navigator) {
+      await (navigator as unknown as {
+        share: (x: { title: string; text: string; url: string }) => Promise<void>;
+      }).share({
+        title: "Comparateur — vols",
+        text: "Résultats de recherche",
+        url,
+      });
+      return;
+    }
+
+    // 2) Clipboard API si dispo (type-safe, sans any)
+    const nav = navigator as Navigator & {
+      clipboard?: { writeText?: (s: string) => Promise<void> };
+    };
+    if (typeof nav.clipboard?.writeText === "function") {
+      await nav.clipboard.writeText(url);
+      alert("Lien copié dans le presse-papiers !");
+      return;
+    }
+
+    // 3) Fallback (textarea + execCommand)
+    const ta = document.createElement("textarea");
+    ta.value = url;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    alert("Lien copié dans le presse-papiers !");
+  } catch {
+    // Dernier recours : on met l’URL dans la barre d’adresse
+    window.history.replaceState(null, "", `/search?${params.toString()}`);
+    alert("Lien prêt dans la barre d’adresse (copie manuelle).");
+  }
+};
+
+  /** Rendus calendrier */
   const renderMonthView = () => {
     const blanks = firstWd;
     const cells: React.ReactNode[] = [];
@@ -459,13 +497,9 @@ export default function SearchPage() {
       <div>
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={prevMonth} className="px-2 py-1 border rounded">
-              ◀
-            </button>
+            <button type="button" onClick={prevMonth} className="px-2 py-1 border rounded">◀</button>
             <div className="font-semibold">{currentMonthLabel}</div>
-            <button type="button" onClick={nextMonth} className="px-2 py-1 border rounded">
-              ▶
-            </button>
+            <button type="button" onClick={nextMonth} className="px-2 py-1 border rounded">▶</button>
           </div>
         </div>
 
@@ -511,13 +545,9 @@ export default function SearchPage() {
     <div>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={prevWeek} className="px-2 py-1 border rounded">
-            ◀ Semaine
-          </button>
+          <button type="button" onClick={prevWeek} className="px-2 py-1 border rounded">◀ Semaine</button>
           <div className="font-semibold">Semaine autour de {selectedDate ?? "—"}</div>
-          <button type="button" onClick={nextWeek} className="px-2 py-1 border rounded">
-            Semaine ▶
-          </button>
+          <button type="button" onClick={nextWeek} className="px-2 py-1 border rounded">Semaine ▶</button>
         </div>
       </div>
       <div className="grid grid-cols-7 gap-2">
@@ -547,7 +577,7 @@ export default function SearchPage() {
     </div>
   );
 
-  /** mini calendrier (input) */
+  /** mini calendrier (popover) */
   const renderMiniCalendar = () => {
     const days: string[] = [];
     for (let day = 1; day <= nbDays; day++) {
@@ -558,12 +588,8 @@ export default function SearchPage() {
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm font-medium">{currentMonthLabel}</div>
           <div className="flex gap-1">
-            <button type="button" className="px-2 py-1 border rounded text-xs" onClick={prevMonth}>
-              ‹
-            </button>
-            <button type="button" className="px-2 py-1 border rounded text-xs" onClick={nextMonth}>
-              ›
-            </button>
+            <button type="button" className="px-2 py-1 border rounded text-xs" onClick={prevMonth}>‹</button>
+            <button type="button" className="px-2 py-1 border rounded text-xs" onClick={nextMonth}>›</button>
           </div>
         </div>
         <div className="grid grid-cols-7 gap-1">
@@ -591,16 +617,11 @@ export default function SearchPage() {
           })}
         </div>
         <div className="mt-2 flex justify-between text-xs">
-          <button type="button" className="px-2 py-1 border rounded" onClick={() => setShowMini(false)}>
-            Fermer
-          </button>
+          <button type="button" className="px-2 py-1 border rounded" onClick={() => setShowMini(false)}>Fermer</button>
           <button
             type="button"
             className="px-2 py-1 border rounded"
-            onClick={() => {
-              setShowMini(false);
-              setView("month");
-            }}
+            onClick={() => { setShowMini(false); setView("month"); }}
           >
             Voir mois
           </button>
