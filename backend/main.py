@@ -1,144 +1,175 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta, date as date_cls
-import hashlib, random, math
-import calendar as pycal
+from typing import Dict, List, Any, Optional
+from datetime import datetime, timedelta, date
+import hashlib
+import random
 
 app = FastAPI()
+
+# CORS large pour dev et Vercel (en prod tu pourras restreindre)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- Règles UM / animaux par compagnie (exemple simple, garde ce bloc) ---
+# --- règles UM / animaux par compagnie (exemple) ---
 AIRLINE_RULES: Dict[str, Dict[str, bool]] = {
+    "AF": {"um_ok": True,  "animal_ok": True},
+    "U2": {"um_ok": False, "animal_ok": True},
     "VY": {"um_ok": False, "animal_ok": True},
     "IB": {"um_ok": True,  "animal_ok": False},
-    "U2": {"um_ok": False, "animal_ok": True},
-    "AF": {"um_ok": True,  "animal_ok": True},
     "KL": {"um_ok": True,  "animal_ok": False},
 }
-CARRIERS: List[str] = list(AIRLINE_RULES.keys())
+CARRIERS = list(AIRLINE_RULES.keys())
 
-# --- Utils ------------------------------------------------------------------
-def md5_int(s: str) -> int:
-    return int(hashlib.md5(s.encode("utf-8")).hexdigest(), 16) & 0x7FFFFFFF
 
-def seed_rng(origin: str, destination: str, ymd: str) -> random.Random:
-    """Seed déterministe par O/D + date pour avoir des prix cohérents."""
-    return random.Random(md5_int(f"{origin}|{destination}|{ymd}"))
+def prng_for(*parts: str) -> random.Random:
+    """PRNG déterministe à partir des paramètres (origin, destination, date)."""
+    s = "|".join(parts)
+    h = hashlib.sha256(s.encode("utf-8")).hexdigest()
+    seed = int(h[:16], 16)
+    rng = random.Random(seed)
+    return rng
 
-def iso(ymd: str, hour: int, minute: int) -> str:
-    return f"{ymd}T{hour:02d}:{minute:02d}"
 
-def minutes_to_iso_dur(m: int) -> str:
-    h, r = divmod(m, 60)
-    return f"PT{h}H{r}M"
+def base_price_for(origin: str, destination: str, ymd: str) -> int:
+    """
+    Base de prix stable pour un jour donné.
+    Utilise la combinaison (route, jour du mois) -> prix réaliste.
+    """
+    rng = prng_for("BASE", origin, destination, ymd)
+    # Composantes : distance approx (via hash), jour de semaine, saison
+    dist_factor = 0.8 + rng.random() * 0.8           # 0.8..1.6
+    dow_factor = [0.95, 0.9, 0.9, 1.0, 1.1, 1.3, 1.25][datetime.fromisoformat(ymd).weekday()]
+    season_bump = 1.0
 
-def od_base_price(origin: str, destination: str) -> float:
-    """Prix de base pseudo-distance O/D, stable."""
-    h = md5_int(f"{origin}>{destination}") % 400
-    return 40.0 + (h / 10.0)  # ~40–80 €
+    m = int(ymd[5:7])
+    if m in (6, 7, 8):           # été
+        season_bump = 1.15
+    elif m in (12, 1):           # fêtes
+        season_bump = 1.1
 
-# --- Générateur unique de vols (utilisé par /search ET /calendar) ----------
-def generate_flights(origin: str, destination: str, ymd: str) -> List[Dict]:
-    rng = seed_rng(origin, destination, ymd)
+    # plancher réaliste
+    base = int(round(35 * dist_factor * dow_factor * season_bump))
+    # pas en-dessous de 28 €
+    return max(base, 28)
 
-    # combien de vols ce jour-là
-    n = rng.randint(4, 8)
 
-    # saisonnalité (petite variation mensuelle)
-    dt = datetime.strptime(ymd, "%Y-%m-%d").date()
-    season = 1.0 + 0.08 * math.sin((dt.timetuple().tm_yday / 365.0) * 2 * math.pi)
+# tout en haut du fichier si tu veux, on garde un flag clair
+ALWAYS_AVAILABLE = True
 
-    base = od_base_price(origin, destination) * season  # base stable + saison
+def available_for(origin: str, destination: str, ymd: str) -> bool:
+    if ALWAYS_AVAILABLE:
+        return True
+    rng = prng_for("AVL", origin, destination, ymd)
+    return rng.random() < 0.8
 
-    flights: List[Dict] = []
-    for _ in range(n):
-        carrier = rng.choice(CARRIERS)
-        rules = AIRLINE_RULES[carrier]
 
-        # direct vs escales
-        is_direct = rng.random() < 0.7  # ~70% directs
-        escales = 0 if is_direct else rng.choice([1, 2])
+def day_min_price(origin: str, destination: str, ymd: str) -> int:
+    """Min prix du jour (utilisé par /calendar ET pour fabriquer les vols)."""
+    rng = prng_for("MIN", origin, destination, ymd)
+    base = base_price_for(origin, destination, ymd)
+    # fluctuation légère mais stable
+    factor = 0.9 + 0.25 * rng.random()   # 0.9..1.15
+    price = int(round(base * factor))
+    return max(price, 20)
+
+
+def fabricate_flights(origin: str, destination: str, ymd: str, direct_only: bool) -> List[Dict[str, Any]]:
+    """
+    Génère une liste de vols stable pour un jour, cohérente avec day_min_price().
+    Le MIN des résultats == prix affiché dans le calendrier.
+    """
+    if not available_for(origin, destination, ymd):
+        return []
+
+    rng = prng_for("FLIGHTS", origin, destination, ymd)
+    min_p = day_min_price(origin, destination, ymd)
+
+    flights: List[Dict[str, Any]] = []
+    day_dt = datetime.fromisoformat(ymd)
+    nb = 6 if not direct_only else 3
+
+    for i in range(nb):
+        # timings stables
+        dep_hour = 6 + i * 2 + rng.randint(0, 1)
+        dep_min = rng.choice([0, 10, 20, 30, 40, 50])
+        dep_dt = day_dt.replace(hour=dep_hour % 24, minute=dep_min)
+
+        # direct vs 1 escale (si direct_only => toujours 0)
+        escales = 0 if direct_only else (0 if rng.random() < 0.7 else 1)
 
         # durée
-        if is_direct:
-            dur_min = rng.randint(90, 180)  # 1h30–3h
-        else:
-            # indirect un peu plus long
-            dur_min = rng.randint(150, 300) + 45 * escales
+        base_dur_min = 110 + rng.randint(-10, 20)     # 1h50 ±
+        if escales == 1:
+            base_dur_min += 50 + rng.randint(0, 40)
 
-        # heure de départ
-        dep_h = rng.randint(6, 21)
-        dep_m = rng.choice([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55])
-        arr = (datetime.strptime(ymd + f" {dep_h:02d}:{dep_m:02d}", "%Y-%m-%d %H:%M")
-               + timedelta(minutes=dur_min))
+        arr_dt = dep_dt + timedelta(minutes=base_dur_min)
 
-        # prix = base +/- bruit + pénalité escales + “heure”
-        price_noise = rng.uniform(-10, 25)
-        stop_penalty = 0 if is_direct else (15 * escales + rng.uniform(0, 10))
-        tod_penalty = 5 if 7 <= dep_h <= 9 or 17 <= dep_h <= 20 else 0
-        prix = max(25, round(base + price_noise + stop_penalty + tod_penalty, 2))
+        # Compagnie & prix
+        comp = rng.choice(CARRIERS)
+        spread = 0 if i == 0 else rng.randint(4, 60)  # 1er vol = min_p
+        price = min_p + spread
 
         flights.append({
-            "compagnie": carrier,
-            "prix": prix,
+            "compagnie": comp,
+            "prix": price,
             "depart": origin,
             "arrivee": destination,
-            "heure_depart": iso(ymd, dep_h, dep_m),
-            "heure_arrivee": iso(ymd, arr.hour, arr.minute),
-            "duree": minutes_to_iso_dur(dur_min),
+            "heure_depart": dep_dt.isoformat(timespec="minutes"),
+            "heure_arrivee": arr_dt.isoformat(timespec="minutes"),
+            "duree": f"PT{base_dur_min//60}H{base_dur_min%60}M",
             "escales": escales,
-            "um_ok": rules["um_ok"],
-            "animal_ok": rules["animal_ok"],
+            "um_ok": AIRLINE_RULES[comp]["um_ok"],
+            "animal_ok": AIRLINE_RULES[comp]["animal_ok"],
         })
-    # tri prix par défaut, stable
+
+    # tri par prix croissant pour avoir le min en premier (cohérent avec UI par défaut)
     flights.sort(key=lambda f: f["prix"])
     return flights
 
-# --- Endpoints --------------------------------------------------------------
-@app.get("/ping")
-def ping():
-    return {"ok": True, "ts": int(datetime.utcnow().timestamp() * 1000)}
 
-@app.get("/search")
-def search(
-    origin: str = Query(..., min_length=2, max_length=5),
-    destination: str = Query(..., min_length=2, max_length=5),
-    date: str = Query(..., regex=r"^\d{4}-\d{2}-\d{2}$"),
-    direct: Optional[int] = Query(None, ge=0, le=1),
-):
-    flights = generate_flights(origin, destination, date)
-    if direct is not None and direct == 1:
-        flights = [f for f in flights if f["escales"] == 0]
-    # déjà trié par prix
-    return {"results": flights}
+@app.get("/ping")
+def ping() -> Dict[str, Any]:
+    return {"ok": True, "ts": int(datetime.now().timestamp() * 1000)}
+
 
 @app.get("/calendar")
 def calendar(
-    origin: str = Query(..., min_length=2, max_length=5),
-    destination: str = Query(..., min_length=2, max_length=5),
-    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
-    direct: Optional[int] = Query(None, ge=0, le=1),
-):
+    origin: str = Query(..., min_length=3, max_length=3),
+    destination: str = Query(..., min_length=3, max_length=3),
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$")
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     # bornes du mois
-    year, mon = map(int, month.split("-"))
-    _, days_in_month = pycal.monthrange(year, mon)
+    first = date.fromisoformat(month + "-01")
+    if first.month == 12:
+        nxt = date(first.year + 1, 1, 1)
+    else:
+        nxt = date(first.year, first.month + 1, 1)
 
-    out: Dict[str, Dict[str, object]] = {}
-    for day in range(1, days_in_month + 1):
-        ymd = f"{year:04d}-{mon:02d}-{day:02d}"
-        flights = generate_flights(origin, destination, ymd)
-        if direct is not None and direct == 1:
-            flights = [f for f in flights if f["escales"] == 0]
-
-        if flights:
-            min_price = min(f["prix"] for f in flights)
-            out[ymd] = {"prix": float(min_price), "disponible": True}
-        else:
-            out[ymd] = {"prix": None, "disponible": False}
+    out: Dict[str, Dict[str, Any]] = {}
+    d = first
+    while d < nxt:
+        ymd = d.isoformat()
+        dispo = available_for(origin, destination, ymd)
+        price = day_min_price(origin, destination, ymd) if dispo else None
+        out[ymd] = {"prix": price, "disponible": dispo}
+        d += timedelta(days=1)
 
     return {"calendar": out}
+
+
+@app.get("/search")
+def search(
+    origin: str = Query(..., min_length=3, max_length=3),
+    destination: str = Query(..., min_length=3, max_length=3),
+    date: str = Query(..., regex=r"^\d{4}-\d{2}-\d{2}$"),
+    direct: int = Query(0, ge=0, le=1)
+) -> Dict[str, List[Dict[str, Any]]]:
+    direct_only = bool(direct)
+    flights = fabricate_flights(origin, destination, date, direct_only)
+    return {"results": flights}
