@@ -27,34 +27,18 @@ export async function GET(req: NextRequest) {
   const origin = sp.get("origin") ?? "";
   const destination = sp.get("destination") ?? "";
   const date = sp.get("date") ?? "";
+  const direct = sp.get("direct"); // <-- nouveau
 
-  if (!origin || !destination || !date) {
-    return NextResponse.json(
-      { error: "missing parameters" },
-      { status: 400 }
-    );
+  const params = new URLSearchParams({ origin, destination, date });
+  if (direct !== null && direct !== undefined && direct !== "") {
+    params.set("direct", direct);
   }
 
-  const url =
-    `${BASE}/search?origin=${encodeURIComponent(origin)}` +
-    `&destination=${encodeURIComponent(destination)}` +
-    `&date=${encodeURIComponent(date)}`;
-
-  try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) {
-      return NextResponse.json(
-        { error: "upstream error", status: r.status },
-        { status: r.status }
-      );
-    }
-
-    const data = (await r.json()) as unknown as SearchPayload;
-    return NextResponse.json(data, {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 500 });
+  const url = `${BASE}/search?${params.toString()}`;
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) {
+    return NextResponse.json({ error: "upstream error", status: r.status }, { status: r.status });
   }
+  const data = (await r.json()) as SearchPayload;
+  return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
 }
