@@ -21,12 +21,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // On ne transmet que les paramètres utiles, on tolère 'direct'
-  const qs = new URLSearchParams({
-    origin,
-    destination,
-    date,
-  });
+  const qs = new URLSearchParams({ origin, destination, date });
   if (sp.has("direct")) qs.set("direct", sp.get("direct") || "0");
 
   const url = `${BASE.replace(/\/+$/, "")}/search?${qs.toString()}`;
@@ -34,24 +29,28 @@ export async function GET(req: NextRequest) {
   try {
     const r = await fetch(url, { cache: "no-store" });
     const text = await r.text();
-    let data: any;
+
+    let data: unknown;
     try {
       data = JSON.parse(text);
     } catch {
       data = text;
     }
+
     if (!r.ok) {
       return NextResponse.json(
         { error: "upstream", status: r.status, details: data },
         { status: r.status }
       );
     }
+
     return NextResponse.json(data, {
       headers: { "Cache-Control": "no-store" },
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
-      { error: "fetch_failed", message: String(e?.message ?? e) },
+      { error: "fetch_failed", message: msg },
       { status: 502 }
     );
   }
