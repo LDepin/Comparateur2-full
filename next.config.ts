@@ -2,11 +2,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  reactStrictMode: true,
+  // évite l’avertissement "experimental.typedRoutes"
   typedRoutes: true,
-  eslint: { ignoreDuringBuilds: true },
+
+  // redirection propre de la racine vers la page app
   async redirects() {
-    return [{ source: "/", destination: "/search", permanent: false }];
+    return [
+      { source: "/", destination: "/search", permanent: true },
+    ];
   },
 };
 
