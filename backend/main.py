@@ -1,219 +1,154 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any
-from datetime import datetime, timedelta, date
-import math
-import random
+from pydantic import BaseModel
+from typing import List, Dict, Optional
+from datetime import datetime, date, timedelta
+import calendar as calmod
+import hashlib, random
 
 app = FastAPI()
 
-# CORS large pour dev et Vercel
+# CORS large (dev + Vercel)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def _seed(*parts) -> random.Random:
-    s = "|".join(map(str, parts))
-    return random.Random(abs(hash(s)) % (2**32))
+# --- Modèle de vol ----------------------------------------------------------
+class Flight(BaseModel):
+    compagnie: str
+    prix: float
+    depart: str
+    arrivee: str
+    heure_depart: str   # ISO string
+    heure_arrivee: str  # ISO string
+    duree: str          # ISO8601 "PT1H45M"
+    escales: int
+    um_ok: bool
+    animal_ok: bool
 
-def _to_iso(dt: datetime) -> str:
-    # format ISO solide pour Safari/Chrome/Firefox
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+# Règles UM/Animaux par compagnie (exemple)
+AIRLINE_RULES: Dict[str, Dict[str, bool]] = {
+    "VY": {"um_ok": True,  "animal_ok": False},
+    "IB": {"um_ok": True,  "animal_ok": True},
+    "U2": {"um_ok": False, "animal_ok": True},
+    "AF": {"um_ok": True,  "animal_ok": True},
+    "KL": {"um_ok": True,  "animal_ok": False},
+}
+CARRIERS = list(AIRLINE_RULES.keys())
 
-def _days_in_month(year: int, month: int) -> int:
-    if month == 12:
-        nxt = date(year + 1, 1, 1)
-    else:
-        nxt = date(year, month + 1, 1)
-    return (nxt - date(year, month, 1)).days
 
-# petites “règles” de compat pour UM/animaux
-def _rules_for_airline(code: str) -> Dict[str, bool]:
-    # Purement simulé ; stable grâce au hash
-    r = _seed("airline", code).random()
-    return {
-        "um_ok": r > 0.25,       # ~75% OK
-        "animal_ok": r > 0.5,    # ~50% OK
-    }
+# --- Générateur déterministe de vols (COMMUN à /search et /calendar) -------
+def _seed_for(origin: str, destination: str, d: date) -> int:
+    s = f"{origin}|{destination}|{d.isoformat()}"
+    # graine stable sur 64 bits
+    return int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
 
-# --- ENDPOINTS ---------------------------------------------------------------
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M")
 
+def _pt_duration(minutes: int) -> str:
+    h, m = divmod(minutes, 60)
+    return f"PT{h}H{m}M"
+
+def generate_flights(origin: str, destination: str, d: date, direct_only: bool=False) -> List[Flight]:
+    rng = random.Random(_seed_for(origin, destination, d))
+    flights: List[Flight] = []
+
+    # volume de vols selon jour/semaine
+    base_n = 3 + (0 if direct_only else 2) + rng.randint(0, 2)
+    weekday = d.weekday()  # 0=Lundi ... 6=Dimanche
+    if weekday in (4, 5):  # ven/sam un peu plus
+        base_n += 1
+
+    for _ in range(base_n):
+        carrier = rng.choice(CARRIERS)
+
+        # départ entre 06:00 et 21:00
+        dep_hour = rng.randint(6, 21)
+        dep_min = rng.choice((0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55))
+        dep_dt = datetime(d.year, d.month, d.day, dep_hour, dep_min)
+
+        # durée 90–180 min (+45–120 min s’il y a escales)
+        escales = 0 if direct_only else rng.choice([0, 0, 0, 1])
+        dur_min = rng.randint(90, 180) + (rng.randint(45, 120) if escales else 0)
+        arr_dt = dep_dt + timedelta(minutes=dur_min)
+
+        # prix de base + modulation jour/semaine + bruit faible → min réaliste 25–35 €
+        base_price = 38 + rng.randint(0, 40)
+        if weekday in (4, 6):  # ven/dim plus chers
+            base_price += 12 + rng.randint(0, 15)
+        elif weekday == 2:     # mercredi un peu moins cher
+            base_price -= 6
+        price = max(25, base_price + rng.randint(-6, 9))
+
+        rules = AIRLINE_RULES[carrier]
+        flights.append(
+            Flight(
+                compagnie=carrier,
+                prix=round(float(price), 2),
+                depart=origin,
+                arrivee=destination,
+                heure_depart=_iso(dep_dt),
+                heure_arrivee=_iso(arr_dt),
+                duree=_pt_duration(dur_min),
+                escales=escales,
+                um_ok=rules["um_ok"],
+                animal_ok=rules["animal_ok"],
+            )
+        )
+
+    # tri par prix croissant pour cohérence
+    flights.sort(key=lambda f: f.prix)
+    return flights
+
+
+# --- Routes -----------------------------------------------------------------
 @app.get("/")
 def root():
-    return {"ok": True, "service": "comparateur-backend"}
-
-@app.get("/calendar")
-def calendar(
-    origin: str = Query(..., min_length=3, max_length=5),
-    destination: str = Query(..., min_length=3, max_length=5),
-    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
-):
-    """Retourne un calendrier des prix minimum par jour pour un mois AAAA-MM."""
-    year = int(month[:4])
-    m = int(month[5:7])
-    n_days = _days_in_month(year, m)
-    rr = _seed("cal", origin, destination, month)
-
-    # base prix stable selon OD + mois
-    base = 40 + int(rr.random() * 40)  # 40-80€
-    out: Dict[str, Dict[str, Any]] = {}
-    for d in range(1, n_days + 1):
-        ymd = f"{year:04d}-{m:02d}-{d:02d}"
-        r = _seed(origin, destination, ymd)
-        available = r.random() > 0.08  # ~92% dispo
-        if not available:
-            out[ymd] = {"prix": None, "disponible": False}
-            continue
-        # bruit saisonnier + bruit aléatoire
-        season = 1.0 + 0.35 * math.sin(d / 31 * math.pi * 2)
-        noise = 0.8 + 0.4 * r.random()
-        price = max(18, round(base * season * noise))
-        out[ymd] = {"prix": price, "disponible": True}
-    return {"calendar": out}
+    return {"ok": True, "service": "Comparateur Backend"}
 
 @app.get("/search")
 def search(
     origin: str = Query(..., min_length=3, max_length=5),
     destination: str = Query(..., min_length=3, max_length=5),
-    date: str = Query(..., regex=r"^\d{4}-\d{2}-\d{2}$"),
-    non_stop: bool = Query(False),
+    date: str = Query(...),           # "YYYY-MM-DD"
+    direct: Optional[int] = Query(0), # 1 = vols directs uniquement
+    sort: Optional[str] = Query("price")
 ):
-    """
-    Retourne une liste de propositions de vols simulées :
-    - horaires ISO (UTC) parseables partout
-    - segments (directs / 1 escale parfois)
-    - durée totale en minutes
-    - UM / animaux par compagnie
-    """
-    rday = _seed("search", origin, destination, date)
-    base_depart = datetime.strptime(date, "%Y-%m-%d").replace(hour=6, minute=0)
+    d = datetime.strptime(date, "%Y-%m-%d").date()
+    flights = generate_flights(origin.upper(), destination.upper(), d, direct_only=bool(direct))
+    # tri côté serveur pour robustesse
+    if sort == "duration":
+        flights.sort(key=lambda f: int(f.duree.replace("PT", "").replace("H", " ").replace("M", "").split()[0])*60 +
+                              int(f.duree.replace("PT", "").replace("H", " ").replace("M", "").split()[1]))
+    else:
+        flights.sort(key=lambda f: f.prix)
+    return {"results": [f.model_dump() for f in flights]}
 
-    # pool compagnies plausibles
-    airlines = ["VY", "IB", "U2", "AF", "TO", "V7", "HV"]
-    a1 = airlines[int(rday.random() * len(airlines))]
-    a2 = airlines[int(rday.random() * len(airlines))]
+@app.get("/calendar")
+def calendar(
+    origin: str = Query(..., min_length=3, max_length=5),
+    destination: str = Query(..., min_length=3, max_length=5),
+    month: str = Query(...),  # "YYYY-MM"
+):
+    year, mon = map(int, month.split("-"))
+    first_day = date(year, mon, 1)
+    last_day = date(year, mon, calmod.monthrange(year, mon)[1])
 
-    results = []
-    count = 4 if non_stop else 5
-
-    for i in range(count):
-        r = _seed(date, origin, destination, i)
-
-        # départ entre 06:00 et 21:00
-        dep_offset_min = int(r.random() * (15 * 60))  # 0..900 minutes
-        dep = base_depart + timedelta(minutes=dep_offset_min)
-
-        # direct vs 1 escale
-        has_stop = (r.random() > 0.65) and (not non_stop)
-
-        if not has_stop:
-            duration_min = int(95 + r.random() * 70)  # 95..165
-            arr = dep + timedelta(minutes=duration_min)
-            airline = a1 if i % 2 == 0 else a2
-            rules = _rules_for_airline(airline)
-            seg = {
-                "origin": origin,
-                "destination": destination,
-                "depart_iso": _to_iso(dep),
-                "arrivee_iso": _to_iso(arr),
-                "compagnie": airline,
-                "numero": f"{airline}{int(100 + r.random()*899)}",
-                "duree_minutes": duration_min,
-            }
-            prix = round(38 + (duration_min - 90) * 0.7 + (r.random() * 40), 2)
-            results.append({
-                "compagnies": [airline],
-                "prix": prix,
-                "depart_code": origin,
-                "arrivee_code": destination,
-                "depart_iso": seg["depart_iso"],
-                "arrivee_iso": seg["arrivee_iso"],
-                "duree_minutes": duration_min,
-                "segments": [seg],
-                "escales": 0,
-                "um_ok": rules["um_ok"],
-                "animal_ok": rules["animal_ok"],
-                # champs legacy pour compat
-                "vols": [{
-                    "depart": origin,
-                    "arrivee": destination,
-                    "duree": f"PT{duration_min//60}H{duration_min%60}M",
-                    "compagnie": airline,
-                    "depart_iso": seg["depart_iso"],
-                    "arrivee_iso": seg["arrivee_iso"],
-                }],
-            })
+    cal: Dict[str, Dict[str, object]] = {}
+    cur = first_day
+    while cur <= last_day:
+        # même générateur que /search → min parfaitement aligné
+        flights = generate_flights(origin.upper(), destination.upper(), cur, direct_only=False)
+        if flights:
+            min_price = min(f.prix for f in flights)
+            cal[cur.isoformat()] = {"prix": round(min_price, 2), "disponible": True}
         else:
-            # une escale : on fabrique un stop “plausible”
-            # stop code : mélange des lettres des deux codes
-            mid = (origin[:2] + destination[-1]).upper()
-            airline_out = a1
-            airline_in = a2 if a2 != a1 else a1
+            cal[cur.isoformat()] = {"prix": None, "disponible": False}
+        cur += timedelta(days=1)
 
-            leg1_min = int(55 + r.random() * 55)     # 55..110
-            layover = int(50 + r.random() * 70)      # 50..120
-            leg2_min = int(45 + r.random() * 70)     # 45..115
-            arr1 = dep + timedelta(minutes=leg1_min)
-            dep2 = arr1 + timedelta(minutes=layover)
-            arr2 = dep2 + timedelta(minutes=leg2_min)
-            duration_min = leg1_min + layover + leg2_min
-
-            rules_mix = {
-                "um_ok": _rules_for_airline(airline_out)["um_ok"] and _rules_for_airline(airline_in)["um_ok"],
-                "animal_ok": _rules_for_airline(airline_out)["animal_ok"] and _rules_for_airline(airline_in)["animal_ok"],
-            }
-
-            seg1 = {
-                "origin": origin,
-                "destination": mid,
-                "depart_iso": _to_iso(dep),
-                "arrivee_iso": _to_iso(arr1),
-                "compagnie": airline_out,
-                "numero": f"{airline_out}{int(100 + r.random()*899)}",
-                "duree_minutes": leg1_min,
-            }
-            seg2 = {
-                "origin": mid,
-                "destination": destination,
-                "depart_iso": _to_iso(dep2),
-                "arrivee_iso": _to_iso(arr2),
-                "compagnie": airline_in,
-                "numero": f"{airline_in}{int(100 + r.random()*899)}",
-                "duree_minutes": leg2_min,
-            }
-            prix = round(52 + (duration_min - 120) * 0.55 + (r.random() * 55), 2)
-            results.append({
-                "compagnies": list({airline_out, airline_in}),
-                "prix": prix,
-                "depart_code": origin,
-                "arrivee_code": destination,
-                "depart_iso": seg1["depart_iso"],
-                "arrivee_iso": seg2["arrivee_iso"],
-                "duree_minutes": duration_min,
-                "segments": [seg1, seg2],
-                "escales": 1,
-                "um_ok": rules_mix["um_ok"],
-                "animal_ok": rules_mix["animal_ok"],
-                # compat
-                "vols": [
-                    {
-                        "depart": origin, "arrivee": mid,
-                        "duree": f"PT{leg1_min//60}H{leg1_min%60}M",
-                        "compagnie": airline_out,
-                        "depart_iso": seg1["depart_iso"], "arrivee_iso": seg1["arrivee_iso"],
-                    },
-                    {
-                        "depart": mid, "arrivee": destination,
-                        "duree": f"PT{leg2_min//60}H{leg2_min%60}M",
-                        "compagnie": airline_in,
-                        "depart_iso": seg2["depart_iso"], "arrivee_iso": seg2["arrivee_iso"],
-                    },
-                ],
-            })
-
-    # tri prix
-    results.sort(key=lambda x: x["prix"])
-    return {"results": results}
+    return {"calendar": cal}
