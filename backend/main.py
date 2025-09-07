@@ -133,7 +133,8 @@ def search(
 def calendar(
     origin: str = Query(..., min_length=3, max_length=5),
     destination: str = Query(..., min_length=3, max_length=5),
-    month: str = Query(...),  # "YYYY-MM"
+    month: str = Query(...),             # "YYYY-MM"
+    direct: Optional[int] = Query(0),    # <-- nouveau : 1 = vols directs uniquement
 ):
     year, mon = map(int, month.split("-"))
     first_day = date(year, mon, 1)
@@ -142,8 +143,12 @@ def calendar(
     cal: Dict[str, Dict[str, object]] = {}
     cur = first_day
     while cur <= last_day:
-        # même générateur que /search → min parfaitement aligné
-        flights = generate_flights(origin.upper(), destination.upper(), cur, direct_only=False)
+        flights = generate_flights(
+            origin.upper(),
+            destination.upper(),
+            cur,
+            direct_only=bool(direct)      # <-- important
+        )
         if flights:
             min_price = min(f.prix for f in flights)
             cal[cur.isoformat()] = {"prix": round(min_price, 2), "disponible": True}
