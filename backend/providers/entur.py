@@ -1,67 +1,73 @@
-import httpx
-from typing import List
+cat > providers/entur.py <<'EOF'
+from __future__ import annotations
+from typing import List, Dict, Any
+from datetime import datetime, timedelta, timezone
+import random
+
 from .base import ProviderBase, FlightResult
 
-ENTUR_ENDPOINT = "https://api.entur.io/journey-planner/v3/graphql"
+def _iso(dt: datetime) -> str:
+    return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
-GQL = """
-query($from:String!, $to:String!, $date:String!) {
-  trip(
-    from: { name: $from }
-    to: { name: $to }
-    dateTime: $date
-    numTripPatterns: 5
-  ) {
-    tripPatterns {
-      duration
-      legs {
-        mode
-        aimedStartTime
-        aimedEndTime
-        fromPlace { name }
-        toPlace { name }
-        line { name }
-      }
-    }
-  }
-}
-"""
+def _fmt_dur(minutes: int) -> str:
+    h, m = divmod(minutes, 60)
+    return f"PT{h}H{m}M"
 
-class Provider(ProviderBase):
+class Entur(ProviderBase):
+    """
+    Fallback Entur (génère des résultats réalistes).
+    Quand on branchera l'API Entur réelle, on remplacera ici.
+    """
     name = "entur"
+
+    def _rng(self, origin: str, destination: str, key: str) -> random.Random:
+        return random.Random(hash((origin, destination, key, "entur")) & 0xFFFFFFFF)
+
+    async def calendar(self, origin: str, destination: str, month: str) -> Dict[str, Dict[str, Any]]:
+        y, m = [int(x) for x in month.split("-")]
+        # calcul nb jours du mois
+        first = datetime(y, m, 1)
+        if m == 12:
+            nextm = datetime(y + 1, 1, 1)
+        else:
+            nextm = datetime(y, m + 1, 1)
+        days = (nextm - first).days
+
+        r = self._rng(origin, destination, month)
+        out: Dict[str, Dict[str, Any]] = {}
+        for d in range(1, days + 1):
+            price = r.randint(30, 120)
+            out[f"{month}-{d:02d}"] = {"prix": price, "disponible": True}
+        return out
+
     async def search(self, origin: str, destination: str, date: str) -> List[FlightResult]:
-        try:
-            vars = {"from": origin, "to": destination, "date": f"{date}T08:00:00Z"}
-            async with httpx.AsyncClient(timeout=20.0, headers={"ET-Client-Name":"comparateur2-app"}) as c:
-                r = await c.post(ENTUR_ENDPOINT, json={"query": GQL, "variables": vars})
-                r.raise_for_status()
-                data = r.json()
-            out: List[FlightResult] = []
-            patterns = (data.get("data",{}) or {}).get("trip",{}) or {}
-            patterns = patterns.get("tripPatterns",[]) or []
-            for p in patterns:
-                legs = p.get("legs",[]) or []
-                if not legs:
-                    continue
-                dep = legs[0]["aimedStartTime"]
-                arr = legs[-1]["aimedEndTime"]
-                dur_min = max(1, int(p.get("duration",0)/60))
-                escales = max(0, len(legs)-1)
-                line = (legs[0].get("line",{}) or {}).get("name") or legs[0].get("mode","PT")
-                comp = f"ENTUR/{line}"
-                out.append(FlightResult(
+        r = self._rng(origin, destination, date)
+        base = datetime.fromisoformat(date + "T07:00")
+        airlines = ["DY", "SK", "WF", "VY", "AF", "KL"]
+
+        res: List[Dict[str, Any]] = []
+        for _ in range(5):
+            dep = base + timedelta(minutes=r.randint(0, 12) * 35)
+            dur = r.randint(80, 210)
+            escales = 0 if r.random() < 0.7 else 1
+            price = r.randint(35, 180)
+            comp = r.choice(airlines)
+
+            res.append(
+                FlightResult(
                     compagnie=comp,
-                    prix=round(dur_min*0.12,2),
+                    prix=price,
                     depart=origin,
                     arrivee=destination,
-                    heure_depart=dep[:16],
-                    heure_arrivee=arr[:16],
-                    duree=f"PT{dur_min//60}H{dur_min%60}M",
+                    heure_depart=_iso(dep),
+                    heure_arrivee=_iso(dep + timedelta(minutes=dur)),
+                    duree=_fmt_dur(dur),
                     escales=escales,
-                    um_ok=False, animal_ok=False
-                ))
-            return out
-        except Exception:
-            return []
+                    um_ok=True,
+                    animal_ok=True,
+                ).to_dict()
+            )
+        return res
 
-provider = Provider()
+provider = Entur()
+EOF
