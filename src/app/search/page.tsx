@@ -202,6 +202,10 @@ export default function SearchPage() {
   const [loadingCal, setLoadingCal] = useState(false);
   const [loadingRes, setLoadingRes] = useState(false);
 
+  // sélection d’un vol (pour piloter la timeline)
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
+
   // mini-calendrier popover (sur champ date)
   const [showMini, setShowMini] = useState(false);
   const miniRef = useRef<HTMLDivElement | null>(null);
@@ -321,8 +325,10 @@ export default function SearchPage() {
         );
 
         setResults(list);
+        setSelectedIdx(null); // reset la sélection quand le jour change
       } catch {
         setResults([]);
+        setSelectedIdx(null);
       } finally {
         setLoadingRes(false);
       }
@@ -423,6 +429,14 @@ export default function SearchPage() {
     } catch {
       window.history.replaceState(null, "", currentShareURL);
       alert("Lien prêt dans la barre d’adresse (copie manuelle).");
+    }
+  };
+
+  // ---------- helpers sélection/scroll ----------
+  const scrollToIdx = (idx: number) => {
+    const el = itemRefs.current[idx];
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   };
 
@@ -563,16 +577,16 @@ export default function SearchPage() {
                         calStats.min,
                         calStats.max
                       ) === "low"
-                        ? "#DCFCE7" // green-100
+                        ? "#DCFCE7"
                         : classifyPrice(
                             patchedCalendar[fmtDateLocal(d)]?.prix ?? null,
                             calStats.min,
                             calStats.max
                           ) === "mid"
-                        ? "#FEF9C3" // yellow-100
+                        ? "#FEF9C3"
                         : patchedCalendar[fmtDateLocal(d)]?.prix == null
-                        ? "#F3F4F6" // gray-100
-                        : "#FFE4E6", // rose-100
+                        ? "#F3F4F6"
+                        : "#FFE4E6",
                   }}
                 />
               </button>
@@ -592,7 +606,7 @@ export default function SearchPage() {
     const dayEnd = dayStart + 24 * 3600 * 1000;
 
     const bars = results
-      .map((r) => {
+      .map((r, idx) => {
         const dep = parseISOorLocal(r.departISO || "");
         const arr = parseISOorLocal(r.arriveeISO || "");
         const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
@@ -601,7 +615,7 @@ export default function SearchPage() {
         const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
         const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
         const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
-        return { left, width };
+        return { left, width, idx };
       })
       .filter((b) => isFinite(b.left) && isFinite(b.width));
 
@@ -611,12 +625,18 @@ export default function SearchPage() {
           Timeline (chaque barre = un vol positionné sur 24 h — départ → arrivée)
         </div>
         <div className="relative h-6 w-full rounded border bg-gray-50">
-          {bars.map((b, i) => (
-            <div
-              key={i}
-              className="absolute top-0 h-full rounded bg-blue-300/80"
+          {bars.map((b) => (
+            <button
+              key={b.idx}
+              className={`absolute top-0 h-full rounded transition ${
+                selectedIdx === b.idx ? "bg-blue-600/90" : "bg-blue-300/80 hover:bg-blue-400/80"
+              }`}
               style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
-              title={`Vol ${i + 1}`}
+              title={`Vol ${b.idx + 1}`}
+              onClick={() => {
+                setSelectedIdx(b.idx);
+                scrollToIdx(b.idx);
+              }}
             />
           ))}
         </div>
@@ -644,8 +664,20 @@ export default function SearchPage() {
         results.map((r, i) => {
           const directBadge =
             typeof r.escales === "number" ? r.escales === 0 : undefined;
+          const selected = selectedIdx === i;
           return (
-            <div key={i} className="rounded border p-3">
+            <div
+              key={i}
+              ref={(el) => (itemRefs.current[i] = el)}
+              className={`rounded border p-3 transition ${
+                selected ? "ring-2 ring-blue-500 border-blue-400" : "hover:shadow"
+              }`}
+              onClick={() => {
+                setSelectedIdx(i);
+                scrollToIdx(i);
+              }}
+              onMouseEnter={() => setSelectedIdx(i)}
+            >
               <div className="flex items-center justify-between">
                 <div className="text-lg font-semibold">{Math.round(r.prix)} €</div>
                 <div className="text-sm text-gray-600">{r.compagnie || "—"}</div>
