@@ -272,6 +272,12 @@ export default function SearchPage() {
   // sélection d’un vol (pour timeline segments)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const setItemRef = useCallback(
+  (i: number) => (el: HTMLDivElement | null) => {
+    itemRefs.current[i] = el;
+  },
+  []
+);
 
   // mini-calendrier popover (sur champ date)
   const [showMini, setShowMini] = useState(false);
@@ -822,7 +828,7 @@ export default function SearchPage() {
           return (
             <div
               key={i}
-              ref={(el) => (itemRefs.current[i] = el)}
+              ref={setItemRef(i)}
               className={`rounded border p-3 transition ${
                 selected ? "ring-2 ring-blue-500 border-blue-400" : "hover:shadow"
               }`}
