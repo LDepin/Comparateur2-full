@@ -13,11 +13,12 @@ type ViewMode = "week" | "month";
 type CalendarDay = { prix: number | null; disponible: boolean };
 type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, disponible }
 
-type Segment = {
+type SegmentRaw = {
   depart_iso?: string;
   departISO?: string;
   arrivee_iso?: string;
   arriveeISO?: string;
+  mode?: "air" | "train" | "bus"; // si backend le fournit déjà plus tard
 };
 
 type FlightRaw = {
@@ -33,9 +34,15 @@ type FlightRaw = {
   arrivee_iso?: string;
   arriveeISO?: string;
   heure_arrivee?: string;
-  vols?: Segment[];
+  vols?: SegmentRaw[]; // segments bruts
   um_ok?: boolean;
   animal_ok?: boolean;
+};
+
+type SegmentNorm = {
+  startISO: string;
+  endISO: string;
+  mode: "air" | "train" | "bus" | "transfer";
 };
 
 type Flight = {
@@ -49,6 +56,7 @@ type Flight = {
   departText?: string;
   arriveeText?: string;
   dureeMin?: number;
+  segments?: SegmentNorm[];
 };
 
 // Dates locales stables (évite le décalage de jour)
@@ -112,6 +120,62 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
+// Normalisation des segments
+function buildSegments(raw: FlightRaw, depISO?: string, arrISO?: string): SegmentNorm[] {
+  const segs: SegmentNorm[] = [];
+
+  // Si le backend fournit des "vols" (segments) : on les pose en mode "air" (par défaut)
+  const rawSegs = Array.isArray(raw.vols) ? raw.vols : [];
+
+  if (rawSegs.length > 0) {
+    const normSegs: SegmentNorm[] = rawSegs
+      .map((s) => {
+        const sISO =
+          s.depart_iso ?? s.departISO ??
+          undefined;
+        const eISO =
+          s.arrivee_iso ?? s.arriveeISO ??
+          undefined;
+        const sd = parseISOorLocal(sISO);
+        const ed = parseISOorLocal(eISO);
+        if (!sd || !ed) return null;
+        return {
+          startISO: sd.toISOString(),
+          endISO: ed.toISOString(),
+          mode: s.mode ?? "air",
+        } as SegmentNorm;
+      })
+      .filter((x): x is SegmentNorm => !!x)
+      .sort((a, b) => new Date(a.startISO).getTime() - new Date(b.startISO).getTime());
+
+    // Insère les "transferts" (trous) entre segments consécutifs
+    const withTransfers: SegmentNorm[] = [];
+    for (let i = 0; i < normSegs.length; i++) {
+      withTransfers.push(normSegs[i]);
+      if (i < normSegs.length - 1) {
+        const curEnd = new Date(normSegs[i].endISO).getTime();
+        const nextStart = new Date(normSegs[i + 1].startISO).getTime();
+        if (nextStart > curEnd) {
+          withTransfers.push({
+            startISO: new Date(curEnd).toISOString(),
+            endISO: new Date(nextStart).toISOString(),
+            mode: "transfer",
+          });
+        }
+      }
+    }
+    return withTransfers;
+  }
+
+  // Sinon, on crée un seul segment (air) si on a des horaires
+  const sd = parseISOorLocal(depISO || "");
+  const ed = parseISOorLocal(arrISO || "");
+  if (sd && ed) {
+    segs.push({ startISO: sd.toISOString(), endISO: ed.toISOString(), mode: "air" });
+  }
+  return segs;
+}
+
 // Normalisation des vols
 function normalizeFlight(r: FlightRaw): Flight {
   const price = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
@@ -147,6 +211,8 @@ function normalizeFlight(r: FlightRaw): Flight {
       ? r.compagnies.join("/")
       : undefined);
 
+  const segments = buildSegments(r, depISO, arrISO);
+
   return {
     prix: Number.isFinite(price) ? Math.round(price) : 0,
     compagnie,
@@ -163,6 +229,7 @@ function normalizeFlight(r: FlightRaw): Flight {
     departText: dep ? toLocalHHMM(dep) : "—",
     arriveeText: arr ? toLocalHHMM(arr) : "—",
     dureeMin: dureeMin ?? undefined,
+    segments,
   };
 }
 
@@ -202,7 +269,7 @@ export default function SearchPage() {
   const [loadingCal, setLoadingCal] = useState(false);
   const [loadingRes, setLoadingRes] = useState(false);
 
-  // sélection d’un vol (pour piloter la timeline)
+  // sélection d’un vol (pour timeline segments)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
@@ -234,7 +301,7 @@ export default function SearchPage() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [showMini]);
 
-  // URL partageable (string simple)
+  // URL partageable
   const currentShareURL = useMemo(() => {
     const p = new URLSearchParams();
     p.set("origin", origin);
@@ -248,7 +315,7 @@ export default function SearchPage() {
     return `/search?${p.toString()}`;
   }, [origin, destination, dateStr, sort, direct, um, pets, view]);
 
-  // pousse l’URL (sans rechargement) — évite le type RouteImpl
+  // pousse l’URL (sans rechargement) — évite RouteImpl
   useEffect(() => {
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", currentShareURL);
@@ -298,7 +365,7 @@ export default function SearchPage() {
     [origin, destination]
   );
 
-  // fetch résultats du jour (TOUS les vols, pas seulement le moins cher)
+  // fetch résultats du jour (TOUS les vols)
   const loadResults = useCallback(
     async (dStr: string) => {
       setLoadingRes(true);
@@ -357,7 +424,6 @@ export default function SearchPage() {
     const s = fmtDateLocal(d); // local → plus de décalage
     setDateStr(s);
     setMonthCursor(d);
-    // les useEffect déclenchent fetch
   };
 
   // navigation mois
@@ -568,8 +634,9 @@ export default function SearchPage() {
                 title={fmtDateLocal(d)}
               >
                 <div className="text-[11px]">{d.getDate()}</div>
-                {/* couleur uniquement (pas de prix) */}
-                <div className="mt-1 h-4 w-full rounded border opacity-80"
+                {/* Couleur (pas de prix) */}
+                <div
+                  className="mt-1 h-4 w-full rounded border opacity-80"
                   style={{
                     background:
                       classifyPrice(
@@ -599,12 +666,99 @@ export default function SearchPage() {
     );
   };
 
+  // ---------- Timeline ----------
   const Timeline: React.FC = () => {
-    // chaque vol est projeté sur 24 h du jour sélectionné
     const start = new Date(dateStr);
     const dayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0).getTime();
     const dayEnd = dayStart + 24 * 3600 * 1000;
 
+    // Si un vol est sélectionné et a des segments → vue segments
+    const selected = selectedIdx != null ? results[selectedIdx] : undefined;
+    const segs = selected?.segments ?? [];
+
+    const colorForMode = (m: SegmentNorm["mode"]) => {
+      switch (m) {
+        case "air":
+          return "#60A5FA"; // bleu
+        case "train":
+          return "#34D399"; // vert
+        case "bus":
+          return "#F59E0B"; // orange
+        case "transfer":
+        default:
+          return "repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 6px,#F9FAFB 6px,#F9FAFB 12px)"; // gris hachuré
+      }
+    };
+
+    if (selected && segs.length > 0) {
+      // timeline détaillée du trajet sélectionné
+      const bars = segs
+        .map((s) => {
+          const sT = new Date(s.startISO).getTime();
+          const eT = new Date(s.endISO).getTime();
+          const clampedS = Math.max(dayStart, Math.min(sT, dayEnd));
+          const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(eT, dayEnd));
+          const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
+          const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
+          return { left, width, mode: s.mode };
+        })
+        .filter((b) => isFinite(b.left) && isFinite(b.width));
+
+      return (
+        <div className="mt-6">
+          <div className="mb-1 text-xs text-gray-500">
+            Timeline du trajet sélectionné — segments (vol/train/bus/transfert)
+          </div>
+          <div className="relative h-6 w-full rounded border bg-gray-50">
+            {bars.map((b, i) => (
+              <div
+                key={i}
+                className="absolute top-0 h-full rounded"
+                style={{
+                  left: `${b.left}%`,
+                  width: `${Math.max(b.width, 2)}%`,
+                  background: colorForMode(b.mode),
+                }}
+                title={b.mode}
+              />
+            ))}
+          </div>
+          <div className="mt-1 flex justify-between text-[10px] text-gray-500">
+            <span>00:00</span>
+            <span>06:00</span>
+            <span>12:00</span>
+            <span>18:00</span>
+            <span>24:00</span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-gray-600">
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-4 rounded" style={{ background: "#60A5FA" }} />
+              Vol
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-4 rounded" style={{ background: "#34D399" }} />
+              Train
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-4 rounded" style={{ background: "#F59E0B" }} />
+              Bus
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-block h-3 w-4 rounded"
+                style={{
+                  background:
+                    "repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 6px,#F9FAFB 6px,#F9FAFB 12px)",
+                }}
+              />
+              Transfert / escale
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    // Sinon : timeline agrégée (tous les vols) + clic = sélection
     const bars = results
       .map((r, idx) => {
         const dep = parseISOorLocal(r.departISO || "");
@@ -622,7 +776,7 @@ export default function SearchPage() {
     return (
       <div className="mt-6">
         <div className="mb-1 text-xs text-gray-500">
-          Timeline (chaque barre = un vol positionné sur 24 h — départ → arrivée)
+          Timeline (tous les vols du jour) — clique pour sélectionner un trajet
         </div>
         <div className="relative h-6 w-full rounded border bg-gray-50">
           {bars.map((b) => (
@@ -838,7 +992,7 @@ export default function SearchPage() {
       <Timeline />
       <ResultsList />
 
-      {/* petit lien debug (pas de Link typé) */}
+      {/* petit lien debug */}
       <div className="mt-8 text-xs text-gray-500">
         <a className="underline" href="/api/ping">
           API ping
