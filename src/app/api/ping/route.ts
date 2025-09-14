@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || process.env.API_BASE || "http://127.0.0.1:8000";
 
 export async function GET() {
-  return NextResponse.json(
-    { ok: true, ts: Date.now() },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+  const r = await fetch(`${API_BASE}/ping`, { cache: "no-store" });
+  const data = await r.json();
+  return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
 }

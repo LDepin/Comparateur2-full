@@ -2,12 +2,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
 
-/* ==============================
-   Helpers & types
-   ============================== */
+// ---------------------------
+// Types minimales et helpers
+// ---------------------------
 
 type CalendarDay = { prix: number | null; disponible: boolean };
 type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, disponible }
@@ -22,18 +21,15 @@ type Flight = {
   escales?: number;
   um_ok?: boolean;
   animal_ok?: boolean;
-  departISO?: string;
+  departISO?: string; // 2025-09-07T07:25:00Z
   arriveeISO?: string;
-  departText?: string;
+  departText?: string; // affichage
   arriveeText?: string;
   dureeMin?: number;
 };
 
+const fmtDate = (d: Date) => d.toISOString().slice(0, 10); // YYYY-MM-DD
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-/** Date locale -> "YYYY-MM-DD" (pas d’UTC, pas d’ISO). */
-const fmtDate = (d: Date) =>
-  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
 const toLocalHHMM = (iso?: string) => {
   if (!iso) return "—";
   const dt = new Date(iso);
@@ -45,10 +41,11 @@ const parseISOorLocal = (v?: string) => {
   if (!v) return undefined;
   const d = new Date(v);
   if (!Number.isNaN(d.getTime())) return d;
+  // fallback HH:MM → aujourd’hui
   if (/^\d{2}:\d{2}$/.test(v)) {
     const now = new Date();
     const [h, m] = v.split(":").map(Number);
-    return new Date(
+    const dt = new Date(
       now.getFullYear(),
       now.getMonth(),
       now.getDate(),
@@ -57,16 +54,19 @@ const parseISOorLocal = (v?: string) => {
       0,
       0
     );
+    return dt;
   }
   return undefined;
 };
 
 const parsePTdur = (pt?: string) => {
   if (!pt || typeof pt !== "string" || !pt.startsWith("PT")) return undefined;
+  // PT#H#M
   let h = 0,
     m = 0;
-  const hMatch = pt.match(/(\d+)H/);
-  const mMatch = pt.match(/(\d+)M/);
+  const hm = pt.slice(2);
+  const hMatch = hm.match(/(\d+)H/);
+  const mMatch = hm.match(/(\d+)M/);
   if (hMatch) h = parseInt(hMatch[1], 10);
   if (mMatch) m = parseInt(mMatch[1], 10);
   return h * 60 + m;
@@ -79,12 +79,12 @@ const minutesDiff = (a?: Date, b?: Date) => {
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 const firstDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
-const lastDayOfMonth = (d: Date) =>
-  new Date(d.getFullYear(), d.getMonth() + 1, 0);
+const lastDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
 
 const frenchWeekLetters = ["L", "M", "M2", "J", "V", "S", "D"]; // clés uniques
 const frenchWeekLabels = ["L", "M", "M", "J", "V", "S", "D"];
 
+// palette simple par "bon marché / moyen / cher"
 function classifyPrice(prix: number | null, min: number, max: number) {
   if (prix == null) return "empty";
   if (max === min) return "low";
@@ -94,9 +94,14 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
+// ---------------------------
+// Normalisation des vols
+// ---------------------------
+
 function normalizeFlight(r: FlightRaw): Flight {
   const price = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
 
+  // source des horaires
   const depISO =
     r?.depart_iso ??
     r?.departISO ??
@@ -143,28 +148,22 @@ function normalizeFlight(r: FlightRaw): Flight {
   };
 }
 
-/* ==============================
-   Page
-   ============================== */
+// ---------------------------
+// Composant principal
+// ---------------------------
 
 export default function SearchPage() {
   const router = useRouter();
   const params = useSearchParams();
 
-  // champs
+  // état des champs
   const [origin, setOrigin] = useState(params.get("origin") || "PAR");
-  const [destination, setDestination] = useState(
-    params.get("destination") || "BCN"
-  );
-  const [dateStr, setDateStr] = useState(
-    params.get("date") || fmtDate(new Date())
-  );
+  const [destination, setDestination] = useState(params.get("destination") || "BCN");
+  const [dateStr, setDateStr] = useState(params.get("date") || fmtDate(new Date()));
   const [sort, setSort] = useState<SortKey>(
     (params.get("sort") as SortKey) || "price"
   );
-  const [direct, setDirect] = useState(params.get("direct") === "1");
-  const [um, setUm] = useState(params.get("um") === "1");
-  const [pets, setPets] = useState(params.get("pets") === "1");
+  const [direct, setDirect] = useState(params.get("direct") === "1" ? true : false);
   const [view, setView] = useState<ViewMode>(
     (params.get("view") as ViewMode) || "week"
   );
@@ -175,18 +174,18 @@ export default function SearchPage() {
   const [loadingCal, setLoadingCal] = useState(false);
   const [loadingRes, setLoadingRes] = useState(false);
 
-  // mini-cal
+  // mini-calendrier popover (sur champ date)
   const [showMini, setShowMini] = useState(false);
   const miniRef = useRef<HTMLDivElement | null>(null);
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
-  // curseur mois (mois courant par défaut)
+  // mois affiché (pour mois & mini-cal)
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date(dateStr);
     return isNaN(d.getTime()) ? new Date() : d;
   });
 
-  // fermer le mini-cal au clic dehors
+  // fermer le mini-cal au clic extérieur
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (
@@ -203,31 +202,40 @@ export default function SearchPage() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [showMini]);
 
-  // URL partageable (typée Route pour Next 15)
+  // URL partageable
   const currentShareURL = useMemo(() => {
     const p = new URLSearchParams();
     p.set("origin", origin);
     p.set("destination", destination);
     p.set("date", dateStr);
     p.set("sort", sort);
-    if (direct) p.set("direct", "1");
-    if (um) p.set("um", "1");
-    if (pets) p.set("pets", "1");
+    p.set("direct", direct ? "1" : "0");
     p.set("view", view);
     return `/search?${p.toString()}`;
-  }, [origin, destination, dateStr, sort, direct, um, pets, view]);
+  }, [origin, destination, dateStr, sort, direct, view]);
 
-  // stats min/max pour la palette
+  // patch calendrier avec min du jour sélectionné → cohérence visuelle
+  const patchedCalendar = useMemo(() => {
+    const copy: CalendarMap = { ...calendar };
+    const dayMin =
+      results.length > 0 ? Math.min(...results.map((r) => r.prix)) : null;
+    const key = dateStr;
+    if (copy[key]) {
+      copy[key] = { prix: dayMin, disponible: copy[key].disponible };
+    }
+    return copy;
+  }, [calendar, results, dateStr]);
+
   const calStats = useMemo(() => {
-    const values = Object.values(calendar)
+    const values = Object.values(patchedCalendar)
       .map((d) => d.prix)
       .filter((x): x is number => typeof x === "number");
     const min = values.length ? Math.min(...values) : 0;
     const max = values.length ? Math.max(...values) : 0;
     return { min, max };
-  }, [calendar]);
+  }, [patchedCalendar]);
 
-  // fetch calendrier (mois du curseur)
+  // fetch calendrier du mois courant
   const loadCalendar = useCallback(
     async (cursor: Date) => {
       setLoadingCal(true);
@@ -237,7 +245,7 @@ export default function SearchPage() {
           origin
         )}&destination=${encodeURIComponent(destination)}&month=${m}${
           direct ? "&direct=1" : ""
-        }${um ? "&um=1" : ""}${pets ? "&pets=1" : ""}`;
+        }`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("calendar upstream");
         const data = await r.json();
@@ -248,31 +256,27 @@ export default function SearchPage() {
         setLoadingCal(false);
       }
     },
-    [origin, destination, direct, um, pets]
+    [origin, destination, direct]
   );
 
-  // fetch résultats (tous les vols)
+  // fetch résultats
   const loadResults = useCallback(
     async (dStr: string) => {
       setLoadingRes(true);
       try {
         const url = `/api/search?origin=${encodeURIComponent(
           origin
-        )}&destination=${encodeURIComponent(
-          destination
-        )}&date=${dStr}${direct ? "&direct=1" : ""}${
-          um ? "&um=1" : ""
-        }${pets ? "&pets=1" : ""}`;
+        )}&destination=${encodeURIComponent(destination)}&date=${dStr}${
+          direct ? "&direct=1" : ""
+        }`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("search upstream");
         const raw = await r.json();
-
         let list: Flight[] = Array.isArray(raw?.results)
           ? raw.results.map(normalizeFlight)
           : [];
-
-        // filtres supplémentaires si besoin
         if (direct) list = list.filter((x) => (x.escales ?? 0) === 0);
+
         // tri
         list.sort((a, b) =>
           sort === "price"
@@ -280,17 +284,17 @@ export default function SearchPage() {
             : (a.dureeMin ?? 9e9) - (b.dureeMin ?? 9e9)
         );
 
-        setResults(list); // ✅ on garde TOUT
+        setResults(list);
       } catch {
         setResults([]);
       } finally {
         setLoadingRes(false);
       }
     },
-    [origin, destination, sort, direct, um, pets]
+    [origin, destination, sort, direct]
   );
 
-  // init & rafraîchissements : calendrier + résultats
+  // init : charge mois + résultats
   useEffect(() => {
     loadCalendar(new Date(dateStr));
   }, [loadCalendar, dateStr]);
@@ -299,25 +303,26 @@ export default function SearchPage() {
     loadResults(dateStr);
   }, [loadResults, dateStr]);
 
-  // mettre à jour l’URL sans rechargement (typée Route)
+  // pousse l’URL (sans rechargement)
   useEffect(() => {
-    router.replace(currentShareURL as Route);
-    // pas de scroll pour éviter un « saut »
-  }, [router, currentShareURL]);
+    // cast any pour éviter la plainte typedRoutes si activé
+    router.replace(currentShareURL as any);
+  }, [currentShareURL, router]);
 
-  // submit bouton Rechercher
+  // submit manuel (bouton Rechercher)
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // dateStr déjà appliqué via le champ
     loadCalendar(new Date(dateStr));
     loadResults(dateStr);
   };
 
-  // sélection d’un jour
+  // sélection d’un jour (depuis semaine, mois ou mini-calendrier)
   const selectDay = (d: Date) => {
-    const s = fmtDate(d); // local, pas d’UTC
+    const s = fmtDate(d);
     setDateStr(s);
     setMonthCursor(d);
-    // useEffect déclenche fetch
+    // les useEffect déclenchent fetch
   };
 
   // navigation mois
@@ -334,11 +339,12 @@ export default function SearchPage() {
     loadCalendar(d);
   };
 
-  // semaine courante (L->D) basée sur dateStr
+  // semaine affichée autour de dateStr (L → D)
   const weekDays = useMemo(() => {
     const base = new Date(dateStr);
     if (isNaN(base.getTime())) return [] as Date[];
-    const js = (base.getDay() + 6) % 7; // lundi=0
+    // rendre lundi=0 … dimanche=6
+    const js = (base.getDay() + 6) % 7;
     const monday = new Date(base);
     monday.setDate(base.getDate() - js);
     return Array.from({ length: 7 }, (_, i) => {
@@ -348,11 +354,11 @@ export default function SearchPage() {
     });
   }, [dateStr]);
 
-  // vue mois (cases vides pour alignement)
+  // vue mois : jours à afficher (cases vides incluses pour aligner)
   const monthDays = useMemo(() => {
     const first = firstDayOfMonth(monthCursor);
     const last = lastDayOfMonth(monthCursor);
-    const startCol = (first.getDay() + 6) % 7; // lundi=0
+    const startCol = (first.getDay() + 6) % 7; // 0 = lundi
     const days: (Date | null)[] = [];
     for (let i = 0; i < startCol; i++) days.push(null);
     for (let d = 1; d <= last.getDate(); d++) {
@@ -361,7 +367,7 @@ export default function SearchPage() {
     return days;
   }, [monthCursor]);
 
-  // PARTAGE
+  // partage
   const doShare = async () => {
     const base =
       typeof window !== "undefined" && window.location
@@ -397,7 +403,7 @@ export default function SearchPage() {
     }
   };
 
-  /* ============ UI ============ */
+  // ------------- RENDUS --------------
 
   const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
     const cls =
@@ -409,7 +415,9 @@ export default function SearchPage() {
         ? "bg-gray-100 border-gray-300 text-gray-400"
         : "bg-rose-100 border-rose-300";
     return (
-      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl`}>
+      <div
+        className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}
+      >
         {value == null ? "—" : `${value} €`}
       </div>
     );
@@ -417,7 +425,7 @@ export default function SearchPage() {
 
   const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
     const key = fmtDate(d);
-    const info = calendar[key];
+    const info = patchedCalendar[key];
     const selected = key === dateStr;
     return (
       <button
@@ -455,13 +463,24 @@ export default function SearchPage() {
   const MonthView = () => (
     <div className="mt-4">
       <div className="mb-3 flex items-center gap-2">
-        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">
+        <button
+          type="button"
+          onClick={goPrevMonth}
+          className="rounded border px-2 py-1"
+        >
           ◀
         </button>
         <div className="min-w-[180px] text-center font-medium">
-          {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+          {monthCursor.toLocaleDateString("fr-FR", {
+            month: "long",
+            year: "numeric",
+          })}
         </div>
-        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">
+        <button
+          type="button"
+          onClick={goNextMonth}
+          className="rounded border px-2 py-1"
+        >
           ▶
         </button>
       </div>
@@ -484,7 +503,6 @@ export default function SearchPage() {
     </div>
   );
 
-  // Mini-calendrier (popover sur le champ date) — couleur seule (pas de prix)
   const MiniCalendar: React.FC = () => {
     if (!showMini) return null;
     const style: React.CSSProperties = {
@@ -500,7 +518,10 @@ export default function SearchPage() {
             ◀
           </button>
           <div className="text-sm font-medium">
-            {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+            {monthCursor.toLocaleDateString("fr-FR", {
+              month: "long",
+              year: "numeric",
+            })}
           </div>
           <button onClick={goNextMonth} className="rounded border px-2 py-1">
             ▶
@@ -520,25 +541,16 @@ export default function SearchPage() {
                   selectDay(d);
                   setShowMini(false);
                 }}
-                className={`rounded border px-1.5 py-1 text-left ${
+                className={`rounded border px-2 py-1 text-left ${
                   fmtDate(d) === dateStr ? "ring-2 ring-blue-400" : ""
                 }`}
               >
-                <div className="text-[12px] mb-1">{d.getDate()}</div>
-                {/* pastille couleur sans prix */}
-                {(() => {
-                  const info = calendar[fmtDate(d)];
-                  const cat = classifyPrice(info?.prix ?? null, calStats.min, calStats.max);
-                  const cls =
-                    cat === "low"
-                      ? "bg-green-200"
-                      : cat === "mid"
-                      ? "bg-yellow-200"
-                      : cat === "high"
-                      ? "bg-rose-200"
-                      : "bg-gray-200";
-                  return <div className={`h-2 w-full rounded ${cls}`} />;
-                })()}
+                <div className="text-[11px]">{d.getDate()}</div>
+                <div className="text-[12px]">
+                  {(patchedCalendar[fmtDate(d)]?.prix ?? null) === null
+                    ? "—"
+                    : `${patchedCalendar[fmtDate(d)]?.prix} €`}
+                </div>
               </button>
             ) : (
               <div key={`mini-empty-${i}`} />
@@ -550,23 +562,16 @@ export default function SearchPage() {
   };
 
   const Timeline: React.FC = () => {
+    // chaque vol est projeté sur 24 h du jour sélectionné
     const start = new Date(dateStr);
-    const dayStart = new Date(
-      start.getFullYear(),
-      start.getMonth(),
-      start.getDate(),
-      0,
-      0,
-      0,
-      0
-    ).getTime();
+    const dayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0).getTime();
     const dayEnd = dayStart + 24 * 3600 * 1000;
 
     const bars = results
       .map((r) => {
         const dep = parseISOorLocal(r.departISO || "");
         const arr = parseISOorLocal(r.arriveeISO || "");
-        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000;
+        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
         const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
         const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
         const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
@@ -602,6 +607,7 @@ export default function SearchPage() {
     );
   };
 
+  // rendu liste
   const ResultsList = () => (
     <div className="mt-4 space-y-3">
       {loadingRes ? (
@@ -619,21 +625,13 @@ export default function SearchPage() {
             </div>
             <div className="mt-1 text-sm text-gray-700">
               {r.departText} → {r.arriveeText} ·{" "}
-              {r.dureeMin
-                ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min`
-                : "—"}{" "}
-              · {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
+              {r.dureeMin ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min` : "—"} ·{" "}
+              {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
             </div>
             <div className="mt-2 flex items-center gap-2 text-xs">
-              {((r.escales ?? 0) === 0) && (
-                <span className="rounded-full border px-2 py-0.5">Direct</span>
-              )}
-              <span className="rounded-full border px-2 py-0.5">
-                {r.um_ok ? "🧒 UM possible" : "🧒 UM ?"}
-              </span>
-              <span className="rounded-full border px-2 py-0.5">
-                {r.animal_ok ? "🐾 Animaux" : "🐾 ?"}
-              </span>
+              <span className="rounded-full border px-2 py-0.5">Direct</span>
+              <span className="rounded-full border px-2 py-0.5">🧒 UM</span>
+              <span className="rounded-full border px-2 py-0.5">🐾 Animaux</span>
             </div>
           </div>
         ))
@@ -641,15 +639,13 @@ export default function SearchPage() {
     </div>
   );
 
-  /* ============ Render ============ */
-
   return (
     <main className="mx-auto max-w-5xl p-4">
       <h1 className="mb-4 text-2xl font-semibold">Comparateur — vols</h1>
 
       {/* Formulaire */}
-      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-8">
-        <div className="md:col-span-2">
+      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-6">
+        <div className="md:col-span-1">
           <label className="mb-1 block text-sm text-gray-600">Origine</label>
           <input
             className="w-full rounded border px-3 py-2"
@@ -658,7 +654,7 @@ export default function SearchPage() {
             placeholder="PAR"
           />
         </div>
-        <div className="md:col-span-2">
+        <div className="md:col-span-1">
           <label className="mb-1 block text-sm text-gray-600">Destination</label>
           <input
             className="w-full rounded border px-3 py-2"
@@ -686,7 +682,7 @@ export default function SearchPage() {
           <MiniCalendar />
         </div>
 
-        <div className="md:col-span-2">
+        <div className="md:col-span-1">
           <label className="mb-1 block text-sm text-gray-600">Tri</label>
           <select
             className="w-full rounded border px-3 py-2"
@@ -698,7 +694,7 @@ export default function SearchPage() {
           </select>
         </div>
 
-        <div className="md:col-span-8 flex flex-wrap items-end gap-3">
+        <div className="flex items-end justify-between gap-2 md:col-span-1">
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -707,22 +703,9 @@ export default function SearchPage() {
             />
             Direct
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={um} onChange={(e) => setUm(e.target.checked)} />
-            🧒 UM
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={pets}
-              onChange={(e) => setPets(e.target.checked)}
-            />
-            🐾 Animaux
-          </label>
-
           <button
             type="submit"
-            className="ml-auto rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+            className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
           >
             Rechercher
           </button>
@@ -777,20 +760,18 @@ export default function SearchPage() {
 
       {/* Calendriers */}
       {loadingCal ? (
-        <div className="py-8 text-center text-sm text-gray-500">
-          Chargement du calendrier…
-        </div>
+        <div className="py-8 text-center text-sm text-gray-500">Chargement du calendrier…</div>
       ) : view === "week" ? (
         <WeekView />
       ) : (
         <MonthView />
       )}
 
-      {/* Timeline + liste complète */}
+      {/* Timeline + liste */}
       <Timeline />
       <ResultsList />
 
-      {/* petit lien debug */}
+      {/* petit lien debug (ancre simple pour éviter typedRoutes) */}
       <div className="mt-8 text-xs text-gray-500">
         <a className="underline" href="/api/ping">
           API ping
