@@ -430,21 +430,23 @@ export default function SearchClient() {
 
   // ------------- RENDUS --------------
 
-  const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
-    const cls =
-      classifyPrice(value, calStats.min, calStats.max) === "low"
-        ? "bg-green-100 border-green-300"
-        : classifyPrice(value, calStats.min, calStats.max) === "mid"
-        ? "bg-yellow-100 border-yellow-300"
-        : value == null
-        ? "bg-gray-100 border-gray-300 text-gray-400"
-        : "bg-rose-100 border-rose-300";
-    return (
-      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}>
-        {value == null ? "—" : `${value} €`}
-      </div>
-    );
-  };
+const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
+  const cls =
+    classifyPrice(value, calStats.min, calStats.max) === "low"
+      ? "bg-green-100 border-green-300"
+      : classifyPrice(value, calStats.min, calStats.max) === "mid"
+      ? "bg-yellow-100 border-yellow-300"
+      : value == null
+      ? "bg-gray-100 border-gray-300 text-gray-400"
+      : "bg-rose-100 border-rose-300";
+  return (
+    <div
+      className={`rounded border ${cls} px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 text-center text-base sm:text-lg md:text-xl font-medium whitespace-nowrap`}
+    >
+      {value == null ? "—" : `${value}\u00A0€`}
+    </div>
+  );
+};
 
   const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
     const key = fmtYMDLocal(d);
@@ -452,10 +454,10 @@ export default function SearchClient() {
     const selected = key === dateStr;
     return (
       <button
-        onClick={() => selectDay(d)}
-        className={`rounded border ${selected ? "ring-2 ring-blue-400" : ""} px-2 py-2 hover:shadow transition`}
-        title={key}
-      >
+  onClick={() => selectDay(d)}
+  className={`rounded border ${selected ? "ring-2 ring-blue-400" : ""} px-1.5 py-1.5 sm:px-2 sm:py-2 hover:shadow transition`}
+  title={key}
+>
         <div className={`mb-1 text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
         <div className={compact ? "text-base" : ""}>
           <PriceBadge value={info?.prix ?? null} />
