@@ -207,8 +207,9 @@ export default function SearchClient() {
   const [loadingCal, setLoadingCal] = useState(false);
   const [loadingRes, setLoadingRes] = useState(false);
 
-  // sélection d’un résultat (pour la timeline)
-  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  // sélection d’un résultat (pour la timeline + surbrillance)
+const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+
 
   // mini-calendrier popover
   const [showMini, setShowMini] = useState(false);
@@ -217,6 +218,14 @@ export default function SearchClient() {
 
   // mois affiché
   const [monthCursor, setMonthCursor] = useState<Date>(() => initialDate);
+
+  useEffect(() => {
+  if (results.length === 0) {
+    setSelectedIndex(-1);
+  } else if (selectedIndex < 0 || selectedIndex >= results.length) {
+    setSelectedIndex(0); // mets -1 si tu préfères aucune sélection par défaut
+  }
+}, [results, selectedIndex]);
 
   // fermer le mini-cal au clic extérieur
   useEffect(() => {
@@ -441,7 +450,7 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
       : "bg-rose-100 border-rose-300";
   return (
     <div
-      className={`rounded border ${cls} px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 text-center text-base sm:text-lg md:text-xl font-medium whitespace-nowrap`}
+      className={`rounded border ${cls} px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 text-center text-sm sm:text-base md:text-xl font-medium whitespace-nowrap`}
     >
       {value == null ? "—" : `${value}\u00A0€`}
     </div>
@@ -455,7 +464,7 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
     return (
       <button
   onClick={() => selectDay(d)}
-  className={`rounded border ${selected ? "ring-2 ring-blue-400" : ""} px-1.5 py-1.5 sm:px-2 sm:py-2 hover:shadow transition`}
+  className={`rounded border ${selected ? "ring-2 ring-blue-400 sm:ring-2 ring-1" : ""} px-1.5 py-1.5 sm:px-2 sm:py-2 hover:shadow transition`}
   title={key}
 >
         <div className={`mb-1 text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
@@ -468,12 +477,12 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
 
   const WeekView = () => (
     <div className="mt-4">
-      <div className="mb-2 grid grid-cols-7 gap-3 text-center text-xs text-gray-500">
+      <div className="mb-2 grid grid-cols-7 gap-2 sm:gap-3 text-center text-xs text-gray-500">
         {frenchWeekLabels.map((w, i) => (
           <div key={frenchWeekLetters[i]}>{w}</div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-3">
+      <div className="grid grid-cols-7 gap-2 sm:gap-3">
         {weekDays.map((d) => (
           <DayTile key={fmtYMDLocal(d)} d={d} />
         ))}
@@ -483,7 +492,7 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
 
   const MonthView = () => (
     <div className="mt-4">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-1.5 sm:gap-2">
         <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">
           ◀
         </button>
@@ -494,12 +503,12 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
           ▶
         </button>
       </div>
-      <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
+      <div className="mb-2 grid grid-cols-7 gap-1.5 sm:gap-2 text-center text-xs text-gray-500">
         {frenchWeekLabels.map((w, i) => (
           <div key={`m-${frenchWeekLetters[i]}`}>{w}</div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
         {monthDays.map((d, i) =>
           d ? (
             <DayTile key={fmtYMDLocal(d)} d={d} compact />
@@ -579,46 +588,61 @@ const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
     );
   };
 
-  const Timeline: React.FC = () => {
-    const start = parseYMDLocal(dateStr) ?? new Date();
-    const dayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0).getTime();
-    const dayEnd = dayStart + 24 * 3600 * 1000;
+const Timeline: React.FC = () => {
+  // chaque vol est projeté sur 24 h du jour sélectionné
+  const start = new Date(dateStr);
+  const dayStart = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    start.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const dayEnd = dayStart + 24 * 3600 * 1000;
 
-    const bars = results
-      .map((r) => {
-        const dep = parseISOorLocal(r.departISO || "");
-        const arr = parseISOorLocal(r.arriveeISO || "");
-        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
-        const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
-        const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
-        const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
-        const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
-        const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
-        return { left, width };
-      })
-      .filter((b) => isFinite(b.left) && isFinite(b.width));
+  const bars = results
+    .map((r) => {
+      const dep = parseISOorLocal(r.departISO || "");
+      const arr = parseISOorLocal(r.arriveeISO || "");
+      const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
+      const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
+      const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
+      const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
+      const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
+      const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
+      return { left, width };
+    })
+    .filter((b) => isFinite(b.left) && isFinite(b.width));
 
-    return (
-      <div className="mt-6">
-        <div className="mb-1 text-xs text-gray-500">Timeline (barre surlignée = résultat sélectionné)</div>
-        <div className="relative h-6 w-full rounded border bg-gray-50">
-          {bars.map((b, i) => (
-            <div
-              key={i}
-              className={`absolute top-0 h-full rounded ${
-                i === selectedIndex ? "bg-blue-600" : "bg-blue-300/80"
-              }`}
-              style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
-              title={`Vol ${i + 1}`}
-            />
-          ))}
-        </div>
-        <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
-        </div>
+  return (
+    <div className="mt-3 sm:mt-6">
+      <div className="mb-1 text-xs text-gray-500">
+        Timeline (barre surlignée = résultat sélectionné)
       </div>
-    );
-  };
+      <div className="relative h-4 sm:h-5 md:h-6 w-full rounded border bg-gray-50">
+        {bars.map((b, i) => (
+          <div
+            key={i}
+            className={`absolute top-0 h-full rounded ${
+              selectedIndex === i ? "bg-blue-500/90" : "bg-blue-300/70"
+            }`}
+            style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
+            title={`Vol ${i + 1}`}
+          />
+        ))}
+      </div>
+      <div className="mt-1 flex justify-between text-[10px] text-gray-500">
+        <span>00:00</span>
+        <span>06:00</span>
+        <span>12:00</span>
+        <span>18:00</span>
+        <span>24:00</span>
+      </div>
+    </div>
+  );
+};
 
   const ResultsList = () => (
     <div className="mt-4 space-y-3">
