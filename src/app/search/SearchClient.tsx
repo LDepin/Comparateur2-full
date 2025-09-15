@@ -180,10 +180,26 @@ function normalizeFlight(r: unknown): Flight {
 // ---------------------------
 // Composant principal (client)
 // ---------------------------
-
-export default function SearchClient() {
+// Détecte le thème système (dark / light)
+function useIsDark(): boolean {
+  const [dark, setDark] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setDark(mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange as any);
+    };
+  }, []);
+  return dark;
+}
+export default function SearchClient(): React.ReactElement {
   const params = useSearchParams();
-
+    const isDark = useIsDark();
   // état des champs
   const [origin, setOrigin] = useState(params.get("origin") || "PAR");
   const [destination, setDestination] = useState(params.get("destination") || "BCN");
@@ -425,33 +441,39 @@ export default function SearchClient() {
 
   // ------------- RENDUS --------------
 
-// --- PriceBadge compact ---
+// --- PriceBadge : contraste renforcé en dark ---
 const PriceBadge: React.FC<{ value: number | null; compact?: boolean }> = ({ value, compact }) => {
-  const cls =
-    classifyPrice(value, calStats.min, calStats.max) === "low"
-      ? "bg-green-100 border-green-300"
-      : classifyPrice(value, calStats.min, calStats.max) === "mid"
-      ? "bg-yellow-100 border-yellow-300"
-      : value == null
-      ? "bg-gray-100 border-gray-300 text-gray-400"
-      : "bg-rose-100 border-rose-300";
+  // palette lisible selon le thème
+  let clsBase = "";
+  const cat = classifyPrice(value, calStats.min, calStats.max);
+  if (value == null) {
+    clsBase = isDark ? "bg-gray-800 border-gray-600 text-gray-400" : "bg-gray-100 border-gray-300 text-gray-400";
+  } else if (cat === "low") {
+    clsBase = isDark ? "bg-green-500/25 border-green-400 text-green-100" : "bg-green-100 border-green-300 text-gray-900";
+  } else if (cat === "mid") {
+    clsBase = isDark ? "bg-yellow-500/25 border-yellow-400 text-yellow-100" : "bg-yellow-100 border-yellow-300 text-gray-900";
+  } else {
+    clsBase = isDark ? "bg-rose-500/25 border-rose-400 text-rose-100" : "bg-rose-100 border-rose-300 text-gray-900";
+  }
 
   const padY = compact ? "py-2" : "py-6";
   const padX = compact ? "px-3" : "px-6";
   const txt  = compact ? "text-base" : "text-xl";
 
   return (
-    <div className={`rounded border ${cls} ${padX} ${padY} text-center ${txt} font-medium`}>
+    <div className={`rounded border ${clsBase} ${padX} ${padY} text-center ${txt} font-medium`}>
       {value == null ? "—" : `${value} €`}
     </div>
   );
 };
 
-// --- DayTile compact + hauteur stable ---
+// --- DayTile : bordures adaptées au thème + hauteur stable ---
 const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
   const key = fmtDateLocal(d);
   const info = patchedCalendar[key];
   const selected = key === dateStr;
+
+  const borderTone = isDark ? "border-gray-700" : "border-gray-200";
 
   return (
     <button
@@ -459,7 +481,7 @@ const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
       title={key}
       className={[
         "rounded border transition hover:shadow",
-        // hauteur stable + layout
+        borderTone,
         compact ? "h-24 sm:h-28" : "h-32 md:h-32",
         "flex flex-col justify-between px-2 py-2",
         selected ? "ring-2 ring-blue-400" : "",
@@ -586,28 +608,41 @@ const MonthView = () => (
       })
       .filter((b) => Number.isFinite(b.left) && Number.isFinite(b.width));
 
-    return (
-      <div className="mt-6">
-        <div className="mb-1 text-xs text-gray-500">Timeline (barre surlignée = résultat sélectionné)</div>
-        <div className="relative h-4 sm:h-5 md:h-6 w-full rounded border bg-gray-50">
-          {bars.map((b, i) => (
-            <div
-              key={i}
-              className={`absolute top-0 h-full rounded ${
-                i === selectedIndex ? "bg-blue-600" : "bg-blue-300/80"
-              }`}
-              style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
-              title={`Vol ${i + 1}`}
-            />
-          ))}
-        </div>
-        <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
-        </div>
-      </div>
-    );
-  };
+  return (
+  <div className="mt-6">
+    <div className={`mb-1 text-xs ${isDark ? "text-gray-300" : "text-gray-500"}`}>
+      Timeline (barre surlignée = résultat sélectionné)
+    </div>
 
+    <div
+      className={`relative h-4 sm:h-5 md:h-6 w-full rounded border ${
+        isDark ? "bg-gray-800 border-gray-700" : "bg-gray-50"
+      }`}
+    >
+      {bars.map((b, i) => (
+        <div
+          key={i}
+          className={`absolute top-0 h-full rounded ${
+            i === selectedIndex
+              ? isDark ? "bg-blue-500" : "bg-blue-600"
+              : isDark ? "bg-blue-400/60" : "bg-blue-300/80"
+          }`}
+          style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
+          title={`Vol ${i + 1}`}
+        />
+      ))}
+    </div>
+
+    <div className={`mt-1 flex justify-between text-[10px] ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+      <span>00:00</span>
+      <span>06:00</span>
+      <span>12:00</span>
+      <span>18:00</span>
+      <span>24:00</span>
+    </div>
+  </div>
+);
+}
   const ResultsList = () => (
     <div className="mt-4 space-y-3">
       {loadingRes ? (
