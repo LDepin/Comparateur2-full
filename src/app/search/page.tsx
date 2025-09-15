@@ -1,95 +1,75 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 
 // ---------------------------
-// Types & helpers
+// Types minimales et helpers
 // ---------------------------
-
-type SortKey = "price" | "duration";
-type ViewMode = "week" | "month";
 
 type CalendarDay = { prix: number | null; disponible: boolean };
 type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, disponible }
 
-type SegmentRaw = {
-  depart_iso?: string;
-  departISO?: string;
-  arrivee_iso?: string;
-  arriveeISO?: string;
-  mode?: "air" | "train" | "bus"; // si backend le fournit déjà plus tard
-};
+type SortKey = "price" | "duration";
+type ViewMode = "week" | "month";
 
-type FlightRaw = {
-  prix?: number | string;
-  compagnie?: string;
-  compagnies?: string[];
-  escales?: number;
-  duree_minutes?: number;
-  duree?: string;
-  depart_iso?: string;
-  departISO?: string;
-  heure_depart?: string;
-  arrivee_iso?: string;
-  arriveeISO?: string;
-  heure_arrivee?: string;
-  vols?: SegmentRaw[]; // segments bruts
-  um_ok?: boolean;
-  animal_ok?: boolean;
-};
-
-type SegmentNorm = {
-  startISO: string;
-  endISO: string;
-  mode: "air" | "train" | "bus" | "transfer";
-};
-
+type FlightRaw = any;
 type Flight = {
   prix: number;
   compagnie?: string;
   escales?: number;
   um_ok?: boolean;
   animal_ok?: boolean;
-  departISO?: string;
+  departISO?: string; // 2025-09-07T07:25:00Z
   arriveeISO?: string;
-  departText?: string;
+  departText?: string; // affichage
   arriveeText?: string;
   dureeMin?: number;
-  segments?: SegmentNorm[];
 };
 
-// Dates locales stables (évite le décalage de jour)
+const fmtDate = (d: Date) => d.toISOString().slice(0, 10); // YYYY-MM-DD
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-const fmtDateLocal = (d: Date) =>
-  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-// HH:MM local
-const toLocalHHMM = (v?: string | Date) => {
-  if (!v) return "—";
-  const dt = v instanceof Date ? v : new Date(v);
+const toLocalHHMM = (iso?: string) => {
+  if (!iso) return "—";
+  const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return "—";
   return `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
 };
 
-// Parse ISO ou "HH:MM" → Date locale aujourd’hui
 const parseISOorLocal = (v?: string) => {
   if (!v) return undefined;
   const d = new Date(v);
   if (!Number.isNaN(d.getTime())) return d;
+  // fallback HH:MM → aujourd’hui
   if (/^\d{2}:\d{2}$/.test(v)) {
     const now = new Date();
     const [h, m] = v.split(":").map(Number);
-    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    const dt = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      h,
+      m,
+      0,
+      0
+    );
     return dt;
   }
   return undefined;
 };
 
-// PT#H#M → minutes
 const parsePTdur = (pt?: string) => {
   if (!pt || typeof pt !== "string" || !pt.startsWith("PT")) return undefined;
-  let h = 0, m = 0;
+  // PT#H#M
+  let h = 0,
+    m = 0;
   const hm = pt.slice(2);
   const hMatch = hm.match(/(\d+)H/);
   const mMatch = hm.match(/(\d+)M/);
@@ -103,14 +83,14 @@ const minutesDiff = (a?: Date, b?: Date) => {
   return Math.max(1, Math.round((b.getTime() - a.getTime()) / 60000));
 };
 
+const monthKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 const firstDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
 const lastDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
-const monthKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 
 const frenchWeekLetters = ["L", "M", "M2", "J", "V", "S", "D"]; // clés uniques
 const frenchWeekLabels = ["L", "M", "M", "J", "V", "S", "D"];
 
-// palette simple par "bon / moyen / cher"
+// palette simple par "bon marché / moyen / cher"
 function classifyPrice(prix: number | null, min: number, max: number) {
   if (prix == null) return "empty";
   if (max === min) return "low";
@@ -120,82 +100,26 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
-// Normalisation des segments
-function buildSegments(raw: FlightRaw, depISO?: string, arrISO?: string): SegmentNorm[] {
-  const segs: SegmentNorm[] = [];
-
-  // Si le backend fournit des "vols" (segments) : on les pose en mode "air" (par défaut)
-  const rawSegs = Array.isArray(raw.vols) ? raw.vols : [];
-
-  if (rawSegs.length > 0) {
-    const normSegs: SegmentNorm[] = rawSegs
-      .map((s) => {
-        const sISO =
-          s.depart_iso ?? s.departISO ??
-          undefined;
-        const eISO =
-          s.arrivee_iso ?? s.arriveeISO ??
-          undefined;
-        const sd = parseISOorLocal(sISO);
-        const ed = parseISOorLocal(eISO);
-        if (!sd || !ed) return null;
-        return {
-          startISO: sd.toISOString(),
-          endISO: ed.toISOString(),
-          mode: s.mode ?? "air",
-        } as SegmentNorm;
-      })
-      .filter((x): x is SegmentNorm => !!x)
-      .sort((a, b) => new Date(a.startISO).getTime() - new Date(b.startISO).getTime());
-
-    // Insère les "transferts" (trous) entre segments consécutifs
-    const withTransfers: SegmentNorm[] = [];
-    for (let i = 0; i < normSegs.length; i++) {
-      withTransfers.push(normSegs[i]);
-      if (i < normSegs.length - 1) {
-        const curEnd = new Date(normSegs[i].endISO).getTime();
-        const nextStart = new Date(normSegs[i + 1].startISO).getTime();
-        if (nextStart > curEnd) {
-          withTransfers.push({
-            startISO: new Date(curEnd).toISOString(),
-            endISO: new Date(nextStart).toISOString(),
-            mode: "transfer",
-          });
-        }
-      }
-    }
-    return withTransfers;
-  }
-
-  // Sinon, on crée un seul segment (air) si on a des horaires
-  const sd = parseISOorLocal(depISO || "");
-  const ed = parseISOorLocal(arrISO || "");
-  if (sd && ed) {
-    segs.push({ startISO: sd.toISOString(), endISO: ed.toISOString(), mode: "air" });
-  }
-  return segs;
-}
-
+// ---------------------------
 // Normalisation des vols
+// ---------------------------
+
 function normalizeFlight(r: FlightRaw): Flight {
   const price = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
 
-  // horaires (niveau vol + premier/dernier segment)
+  // source des horaires
   const depISO =
     r?.depart_iso ??
     r?.departISO ??
     r?.heure_depart ??
     r?.vols?.[0]?.depart_iso ??
     r?.vols?.[0]?.departISO;
-
   const arrISO =
     r?.arrivee_iso ??
     r?.arriveeISO ??
     r?.heure_arrivee ??
-    (r?.vols && r.vols.length > 0
-      ? r.vols[r.vols.length - 1]?.arrivee_iso ??
-        r.vols[r.vols.length - 1]?.arriveeISO
-      : undefined);
+    r?.vols?.[r?.vols?.length - 1]?.arrivee_iso ??
+    r?.vols?.[r?.vols?.length - 1]?.arriveeISO;
 
   const dep = parseISOorLocal(depISO);
   const arr = parseISOorLocal(arrISO);
@@ -211,8 +135,6 @@ function normalizeFlight(r: FlightRaw): Flight {
       ? r.compagnies.join("/")
       : undefined);
 
-  const segments = buildSegments(r, depISO, arrISO);
-
   return {
     prix: Number.isFinite(price) ? Math.round(price) : 0,
     compagnie,
@@ -226,37 +148,28 @@ function normalizeFlight(r: FlightRaw): Flight {
     animal_ok: !!r?.animal_ok,
     departISO: dep ? dep.toISOString() : undefined,
     arriveeISO: arr ? arr.toISOString() : undefined,
-    departText: dep ? toLocalHHMM(dep) : "—",
-    arriveeText: arr ? toLocalHHMM(arr) : "—",
+    departText: dep ? toLocalHHMM(dep.toISOString()) : "—",
+    arriveeText: arr ? toLocalHHMM(arr.toISOString()) : "—",
     dureeMin: dureeMin ?? undefined,
-    segments,
   };
 }
-
-// Partage (Web Share + fallback)
-type ShareDataLite = { title?: string; text?: string; url?: string };
-type NavigatorShare = Navigator & { share?: (data: ShareDataLite) => Promise<void> };
-type NavigatorClipboard = Navigator & { clipboard?: { writeText?: (t: string) => Promise<void> } };
-const hasShare = (n: Navigator): n is NavigatorShare =>
-  typeof (n as NavigatorShare).share === "function";
 
 // ---------------------------
 // Composant principal
 // ---------------------------
 
 export default function SearchPage() {
+  const router = useRouter();
   const params = useSearchParams();
 
   // état des champs
   const [origin, setOrigin] = useState(params.get("origin") || "PAR");
   const [destination, setDestination] = useState(params.get("destination") || "BCN");
-  const [dateStr, setDateStr] = useState(
-    params.get("date") || fmtDateLocal(new Date())
-  );
+  const [dateStr, setDateStr] = useState(params.get("date") || fmtDate(new Date()));
   const [sort, setSort] = useState<SortKey>(
     (params.get("sort") as SortKey) || "price"
   );
-  const [direct, setDirect] = useState(params.get("direct") === "1");
+  const [direct, setDirect] = useState(params.get("direct") === "1" ? true : false);
   const [um, setUM] = useState(params.get("um") === "1");
   const [pets, setPets] = useState(params.get("pets") === "1");
   const [view, setView] = useState<ViewMode>(
@@ -272,12 +185,6 @@ export default function SearchPage() {
   // sélection d’un vol (pour timeline segments)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const setItemRef = useCallback(
-  (i: number) => (el: HTMLDivElement | null) => {
-    itemRefs.current[i] = el;
-  },
-  []
-);
 
   // mini-calendrier popover (sur champ date)
   const [showMini, setShowMini] = useState(false);
@@ -307,7 +214,7 @@ export default function SearchPage() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [showMini]);
 
-  // URL partageable
+  // URL partageable (relatif, pour router.replace)
   const currentShareURL = useMemo(() => {
     const p = new URLSearchParams();
     p.set("origin", origin);
@@ -320,13 +227,6 @@ export default function SearchPage() {
     p.set("view", view);
     return `/search?${p.toString()}`;
   }, [origin, destination, dateStr, sort, direct, um, pets, view]);
-
-  // pousse l’URL (sans rechargement) — évite RouteImpl
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", currentShareURL);
-    }
-  }, [currentShareURL]);
 
   // patch calendrier avec min du jour sélectionné → cohérence visuelle
   const patchedCalendar = useMemo(() => {
@@ -355,9 +255,9 @@ export default function SearchPage() {
       setLoadingCal(true);
       try {
         const m = monthKey(cursor);
-        const url =
-          `/api/calendar?origin=${encodeURIComponent(origin)}` +
-          `&destination=${encodeURIComponent(destination)}&month=${m}`;
+        const url = `/api/calendar?origin=${encodeURIComponent(
+          origin
+        )}&destination=${encodeURIComponent(destination)}&month=${m}`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("calendar upstream");
         const data = await r.json();
@@ -371,23 +271,23 @@ export default function SearchPage() {
     [origin, destination]
   );
 
-  // fetch résultats du jour (TOUS les vols)
+  // fetch résultats (avec filtres)
   const loadResults = useCallback(
     async (dStr: string) => {
       setLoadingRes(true);
       try {
-        const url =
-          `/api/search?origin=${encodeURIComponent(origin)}` +
-          `&destination=${encodeURIComponent(destination)}&date=${dStr}` +
-          (direct ? "&direct=1" : "") +
-          (um ? "&um=1" : "") +
-          (pets ? "&pets=1" : "");
+        const url = `/api/search?origin=${encodeURIComponent(
+          origin
+        )}&destination=${encodeURIComponent(destination)}&date=${dStr}${
+          direct ? "&direct=1" : ""
+        }${um ? "&um=1" : ""}${pets ? "&pets=1" : ""}`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("search upstream");
         const raw = await r.json();
         let list: Flight[] = Array.isArray(raw?.results)
           ? raw.results.map(normalizeFlight)
           : [];
+
         if (direct) list = list.filter((x) => (x.escales ?? 0) === 0);
 
         // tri
@@ -398,10 +298,9 @@ export default function SearchPage() {
         );
 
         setResults(list);
-        setSelectedIdx(null); // reset la sélection quand le jour change
+        setSelectedIdx(null); // reset sélection à chaque nouvelle recherche
       } catch {
         setResults([]);
-        setSelectedIdx(null);
       } finally {
         setLoadingRes(false);
       }
@@ -418,6 +317,14 @@ export default function SearchPage() {
     loadResults(dateStr);
   }, [loadResults, dateStr]);
 
+  // pousser l’URL sans rechargement (compatible types RouteImpl)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const abs = new URL(currentShareURL, window.location.origin);
+    const path = (abs.pathname + abs.search) as Route;
+    router.replace(path);
+  }, [router, currentShareURL]);
+
   // submit manuel (bouton Rechercher)
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -425,11 +332,12 @@ export default function SearchPage() {
     loadResults(dateStr);
   };
 
-  // sélection d’un jour (depuis semaine, mois ou mini-cal)
+  // sélection d’un jour (depuis semaine, mois ou mini-calendrier)
   const selectDay = (d: Date) => {
-    const s = fmtDateLocal(d); // local → plus de décalage
+    const s = fmtDate(d);
     setDateStr(s);
     setMonthCursor(d);
+    // les useEffect déclenchent fetch
   };
 
   // navigation mois
@@ -450,7 +358,7 @@ export default function SearchPage() {
   const weekDays = useMemo(() => {
     const base = new Date(dateStr);
     if (isNaN(base.getTime())) return [] as Date[];
-    // lundi=0 … dimanche=6
+    // rendre lundi=0 … dimanche=6
     const js = (base.getDay() + 6) % 7;
     const monday = new Date(base);
     monday.setDate(base.getDate() - js);
@@ -474,7 +382,7 @@ export default function SearchPage() {
     return days;
   }, [monthCursor]);
 
-  // Partage
+  // partage (Web Share API ou Presse-papiers → fallback barre d’adresse)
   const doShare = async () => {
     const base =
       typeof window !== "undefined" && window.location
@@ -482,56 +390,63 @@ export default function SearchPage() {
         : "";
     const url = `${base}${currentShareURL}`;
     try {
-      if (typeof navigator !== "undefined" && hasShare(navigator)) {
-        await (navigator as NavigatorShare).share({
-          title: "Comparateur — vols",
-          text: "Résultats de recherche",
-          url,
-        });
+      const nav = navigator as Navigator & {
+        share?: (data: { title?: string; text?: string; url?: string }) => Promise<void>;
+        clipboard?: { writeText: (t: string) => Promise<void> };
+      };
+      if (typeof nav.share === "function") {
+        await nav.share({ title: "Comparateur — vols", text: "Résultats de recherche", url });
+      } else if (nav.clipboard?.writeText) {
+        await nav.clipboard.writeText(url);
+        alert("Lien copié dans le presse-papiers !");
       } else {
-        const nav = navigator as NavigatorClipboard;
-        if (nav.clipboard?.writeText) {
-          await nav.clipboard.writeText(url);
-          alert("Lien copié dans le presse-papiers !");
-        } else {
+        if (typeof window !== "undefined") {
           window.history.replaceState(null, "", currentShareURL);
-          alert("Lien prêt dans la barre d’adresse (copie manuelle).");
         }
+        alert("Lien prêt dans la barre d’adresse (copie manuelle).");
       }
     } catch {
-      window.history.replaceState(null, "", currentShareURL);
+      if (typeof window !== "undefined") {
+        window.history.replaceState(null, "", currentShareURL);
+      }
       alert("Lien prêt dans la barre d’adresse (copie manuelle).");
     }
   };
 
-  // ---------- helpers sélection/scroll ----------
+  // ------------ helpers sélection/scroll ------------
   const scrollToIdx = (idx: number) => {
     const el = itemRefs.current[idx];
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   };
+  const setItemRef = (i: number) => (el: HTMLDivElement | null) => {
+    itemRefs.current[i] = el;
+  };
 
   // ------------- RENDUS --------------
 
   const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
+    const colorKey = classifyPrice(value, calStats.min, calStats.max);
     const cls =
-      classifyPrice(value, calStats.min, calStats.max) === "low"
+      colorKey === "low"
         ? "bg-green-100 border-green-300"
-        : classifyPrice(value, calStats.min, calStats.max) === "mid"
+        : colorKey === "mid"
         ? "bg-yellow-100 border-yellow-300"
         : value == null
         ? "bg-gray-100 border-gray-300 text-gray-400"
         : "bg-rose-100 border-rose-300";
     return (
-      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}>
+      <div
+        className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}
+      >
         {value == null ? "—" : `${value} €`}
       </div>
     );
   };
 
   const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
-    const key = fmtDateLocal(d);
+    const key = fmtDate(d);
     const info = patchedCalendar[key];
     const selected = key === dateStr;
     return (
@@ -561,7 +476,7 @@ export default function SearchPage() {
       </div>
       <div className="grid grid-cols-7 gap-3">
         {weekDays.map((d) => (
-          <DayTile key={fmtDateLocal(d)} d={d} />
+          <DayTile key={fmtDate(d)} d={d} />
         ))}
       </div>
     </div>
@@ -570,13 +485,24 @@ export default function SearchPage() {
   const MonthView = () => (
     <div className="mt-4">
       <div className="mb-3 flex items-center gap-2">
-        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">
+        <button
+          type="button"
+          onClick={goPrevMonth}
+          className="rounded border px-2 py-1"
+        >
           ◀
         </button>
         <div className="min-w-[180px] text-center font-medium">
-          {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+          {monthCursor.toLocaleDateString("fr-FR", {
+            month: "long",
+            year: "numeric",
+          })}
         </div>
-        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">
+        <button
+          type="button"
+          onClick={goNextMonth}
+          className="rounded border px-2 py-1"
+        >
           ▶
         </button>
       </div>
@@ -588,7 +514,7 @@ export default function SearchPage() {
       <div className="grid grid-cols-7 gap-2">
         {monthDays.map((d, i) =>
           d ? (
-            <DayTile key={fmtDateLocal(d)} d={d} compact />
+            <DayTile key={fmtDate(d)} d={d} compact />
           ) : (
             <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30">
               &nbsp;
@@ -614,7 +540,10 @@ export default function SearchPage() {
             ◀
           </button>
           <div className="text-sm font-medium">
-            {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+            {monthCursor.toLocaleDateString("fr-FR", {
+              month: "long",
+              year: "numeric",
+            })}
           </div>
           <button onClick={goNextMonth} className="rounded border px-2 py-1">
             ▶
@@ -625,178 +554,109 @@ export default function SearchPage() {
             <div key={`mini-${frenchWeekLetters[i]}`}>{w}</div>
           ))}
         </div>
+        {/* Mini-cal : on n’affiche pas le prix, juste une pastille couleur */}
         <div className="grid grid-cols-7 gap-1">
           {monthDays.map((d, i) =>
             d ? (
               <button
-                key={`mini-${fmtDateLocal(d)}`}
+                key={`mini-${fmtDate(d)}`}
                 onClick={() => {
                   selectDay(d);
                   setShowMini(false);
                 }}
-                className={`rounded border px-2 py-1 text-left ${
-                  fmtDateLocal(d) === dateStr ? "ring-2 ring-blue-400" : ""
+                className={`rounded border px-1 py-1 text-left ${
+                  fmtDate(d) === dateStr ? "ring-2 ring-blue-400" : ""
                 }`}
-                title={fmtDateLocal(d)}
+                title={fmtDate(d)}
               >
-                <div className="text-[11px]">{d.getDate()}</div>
-                {/* Couleur (pas de prix) */}
-                <div
-                  className="mt-1 h-4 w-full rounded border opacity-80"
-                  style={{
-                    background:
-                      classifyPrice(
-                        patchedCalendar[fmtDateLocal(d)]?.prix ?? null,
-                        calStats.min,
-                        calStats.max
-                      ) === "low"
-                        ? "#DCFCE7"
-                        : classifyPrice(
-                            patchedCalendar[fmtDateLocal(d)]?.prix ?? null,
-                            calStats.min,
-                            calStats.max
-                          ) === "mid"
-                        ? "#FEF9C3"
-                        : patchedCalendar[fmtDateLocal(d)]?.prix == null
-                        ? "#F3F4F6"
-                        : "#FFE4E6",
-                  }}
-                />
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px]">{d.getDate()}</div>
+                  {(() => {
+                    const info = patchedCalendar[fmtDate(d)];
+                    const k = classifyPrice(info?.prix ?? null, calStats.min, calStats.max);
+                    const dot =
+                      k === "low"
+                        ? "bg-green-200 ring-green-400"
+                        : k === "mid"
+                        ? "bg-yellow-200 ring-yellow-400"
+                        : k === "high"
+                        ? "bg-rose-200 ring-rose-400"
+                        : "bg-gray-200 ring-gray-300";
+                    return (
+                      <span
+                        className={`ml-1 inline-block h-3 w-5 rounded ring-1 ${dot}`}
+                        aria-hidden
+                      />
+                    );
+                  })()}
+                </div>
               </button>
             ) : (
               <div key={`mini-empty-${i}`} />
             )
           )}
         </div>
+        <div className="mt-2 text-right">
+          <button
+            onClick={() => setShowMini(false)}
+            className="rounded border px-2 py-0.5 text-xs"
+            type="button"
+          >
+            Fermer
+          </button>
+        </div>
       </div>
     );
   };
 
-  // ---------- Timeline ----------
   const Timeline: React.FC = () => {
+    // timeline sur 24 h du jour sélectionné
     const start = new Date(dateStr);
-    const dayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0).getTime();
+    const dayStart = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+      0,
+      0,
+      0,
+      0
+    ).getTime();
     const dayEnd = dayStart + 24 * 3600 * 1000;
 
-    // Si un vol est sélectionné et a des segments → vue segments
-    const selected = selectedIdx != null ? results[selectedIdx] : undefined;
-    const segs = selected?.segments ?? [];
-
-    const colorForMode = (m: SegmentNorm["mode"]) => {
-      switch (m) {
-        case "air":
-          return "#60A5FA"; // bleu
-        case "train":
-          return "#34D399"; // vert
-        case "bus":
-          return "#F59E0B"; // orange
-        case "transfer":
-        default:
-          return "repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 6px,#F9FAFB 6px,#F9FAFB 12px)"; // gris hachuré
-      }
+    const computeBar = (r: Flight) => {
+      const dep = parseISOorLocal(r.departISO || "");
+      const arr = parseISOorLocal(r.arriveeISO || "");
+      const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
+      const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
+      const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
+      const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
+      const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
+      const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
+      return { left, width };
     };
 
-    if (selected && segs.length > 0) {
-      // timeline détaillée du trajet sélectionné
-      const bars = segs
-        .map((s) => {
-          const sT = new Date(s.startISO).getTime();
-          const eT = new Date(s.endISO).getTime();
-          const clampedS = Math.max(dayStart, Math.min(sT, dayEnd));
-          const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(eT, dayEnd));
-          const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
-          const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
-          return { left, width, mode: s.mode };
-        })
-        .filter((b) => isFinite(b.left) && isFinite(b.width));
-
-      return (
-        <div className="mt-6">
-          <div className="mb-1 text-xs text-gray-500">
-            Timeline du trajet sélectionné — segments (vol/train/bus/transfert)
-          </div>
-          <div className="relative h-6 w-full rounded border bg-gray-50">
-            {bars.map((b, i) => (
-              <div
-                key={i}
-                className="absolute top-0 h-full rounded"
-                style={{
-                  left: `${b.left}%`,
-                  width: `${Math.max(b.width, 2)}%`,
-                  background: colorForMode(b.mode),
-                }}
-                title={b.mode}
-              />
-            ))}
-          </div>
-          <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-            <span>00:00</span>
-            <span>06:00</span>
-            <span>12:00</span>
-            <span>18:00</span>
-            <span>24:00</span>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-gray-600">
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-4 rounded" style={{ background: "#60A5FA" }} />
-              Vol
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-4 rounded" style={{ background: "#34D399" }} />
-              Train
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-4 rounded" style={{ background: "#F59E0B" }} />
-              Bus
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span
-                className="inline-block h-3 w-4 rounded"
-                style={{
-                  background:
-                    "repeating-linear-gradient(45deg,#E5E7EB,#E5E7EB 6px,#F9FAFB 6px,#F9FAFB 12px)",
-                }}
-              />
-              Transfert / escale
-            </span>
-          </div>
-        </div>
-      );
-    }
-
-    // Sinon : timeline agrégée (tous les vols) + clic = sélection
-    const bars = results
-      .map((r, idx) => {
-        const dep = parseISOorLocal(r.departISO || "");
-        const arr = parseISOorLocal(r.arriveeISO || "");
-        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
-        const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
-        const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
-        const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
-        const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
-        const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
-        return { left, width, idx };
-      })
-      .filter((b) => isFinite(b.left) && isFinite(b.width));
+    const bars =
+      selectedIdx != null && results[selectedIdx]
+        ? [computeBar(results[selectedIdx])]
+        : results
+            .map(computeBar)
+            .filter((b) => isFinite(b.left) && isFinite(b.width));
 
     return (
       <div className="mt-6">
         <div className="mb-1 text-xs text-gray-500">
-          Timeline (tous les vols du jour) — clique pour sélectionner un trajet
+          Timeline {selectedIdx != null ? "(vol sélectionné)" : "(tous les vols)"} — chaque barre
+          représente un trajet positionné sur 24 h (départ → arrivée)
         </div>
         <div className="relative h-6 w-full rounded border bg-gray-50">
-          {bars.map((b) => (
-            <button
-              key={b.idx}
-              className={`absolute top-0 h-full rounded transition ${
-                selectedIdx === b.idx ? "bg-blue-600/90" : "bg-blue-300/80 hover:bg-blue-400/80"
+          {bars.map((b, i) => (
+            <div
+              key={i}
+              className={`absolute top-0 h-full rounded ${
+                selectedIdx != null ? "bg-blue-500/90" : "bg-blue-300/80"
               }`}
               style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
-              title={`Vol ${b.idx + 1}`}
-              onClick={() => {
-                setSelectedIdx(b.idx);
-                scrollToIdx(b.idx);
-              }}
+              title={`Vol ${i + 1}`}
             />
           ))}
         </div>
@@ -823,7 +683,7 @@ export default function SearchPage() {
       ) : (
         results.map((r, i) => {
           const directBadge =
-            typeof r.escales === "number" ? r.escales === 0 : undefined;
+            typeof r.escales === "number" ? (r.escales === 0 ? "Direct" : `${r.escales} escale(s)`) : "—";
           const selected = selectedIdx === i;
           return (
             <div
@@ -844,18 +704,20 @@ export default function SearchPage() {
               </div>
               <div className="mt-1 text-sm text-gray-700">
                 {r.departText} → {r.arriveeText} ·{" "}
-                {r.dureeMin ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min` : "—"} ·{" "}
-                {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
+                {r.dureeMin
+                  ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min`
+                  : "—"}{" "}
+                · {directBadge}
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className={`rounded-full border px-2 py-0.5 ${directBadge ? "bg-green-50" : ""}`}>
-                  Direct
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                <span className="rounded-full border px-2 py-0.5">
+                  {direct ? "Direct requis" : "Direct possible"}
                 </span>
-                <span className={`rounded-full border px-2 py-0.5 ${r.um_ok ? "bg-yellow-50" : "opacity-60"}`}>
-                  🧒 UM {r.um_ok ? "possible" : "—"}
+                <span className="rounded-full border px-2 py-0.5">
+                  {r.um_ok ? "🧒 UM possible" : "🧒 UM —"}
                 </span>
-                <span className={`rounded-full border px-2 py-0.5 ${r.animal_ok ? "bg-yellow-50" : "opacity-60"}`}>
-                  🐾 Animaux {r.animal_ok ? "possible" : "—"}
+                <span className="rounded-full border px-2 py-0.5">
+                  {r.animal_ok ? "🐾 Animaux" : "🐾 —"}
                 </span>
               </div>
             </div>
@@ -870,8 +732,8 @@ export default function SearchPage() {
       <h1 className="mb-4 text-2xl font-semibold">Comparateur — vols</h1>
 
       {/* Formulaire */}
-      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-7">
-        <div className="md:col-span-1">
+      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-8">
+        <div className="md:col-span-2">
           <label className="mb-1 block text-sm text-gray-600">Origine</label>
           <input
             className="w-full rounded border px-3 py-2"
@@ -880,7 +742,7 @@ export default function SearchPage() {
             placeholder="PAR"
           />
         </div>
-        <div className="md:col-span-1">
+        <div className="md:col-span-2">
           <label className="mb-1 block text-sm text-gray-600">Destination</label>
           <input
             className="w-full rounded border px-3 py-2"
@@ -908,7 +770,7 @@ export default function SearchPage() {
           <MiniCalendar />
         </div>
 
-        <div className="md:col-span-1">
+        <div className="md:col-span-2">
           <label className="mb-1 block text-sm text-gray-600">Tri</label>
           <select
             className="w-full rounded border px-3 py-2"
@@ -920,74 +782,98 @@ export default function SearchPage() {
           </select>
         </div>
 
-        <div className="md:col-span-2 flex items-end justify-between gap-3">
+        <div className="md:col-span-8 flex flex-wrap items-end gap-4">
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={direct}
+              onChange={(e) => setDirect(e.target.checked)}
+            />
             Direct
           </label>
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={um} onChange={(e) => setUM(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={um}
+              onChange={(e) => setUM(e.target.checked)}
+            />
             UM
           </label>
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={pets} onChange={(e) => setPets(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={pets}
+              onChange={(e) => setPets(e.target.checked)}
+            />
             Animaux
           </label>
-          <button type="submit" className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
-            Rechercher
-          </button>
+
+          <div className="ml-auto flex items-center gap-2">
+            <div className="rounded border">
+              <button
+                className={`px-3 py-1 ${view === "week" ? "bg-black text-white" : ""}`}
+                onClick={() => setView("week")}
+                type="button"
+                aria-pressed={view === "week"}
+              >
+                Semaine
+              </button>
+              <button
+                className={`px-3 py-1 ${view === "month" ? "bg-black text-white" : ""}`}
+                onClick={() => setView("month")}
+                type="button"
+                aria-pressed={view === "month"}
+              >
+                Mois
+              </button>
+            </div>
+
+            <button
+              onClick={doShare}
+              type="button"
+              className="rounded border px-3 py-1"
+              title="Partager"
+            >
+              🔗 Partager
+            </button>
+
+            <button
+              type="submit"
+              className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+            >
+              Rechercher
+            </button>
+          </div>
         </div>
       </form>
 
-      {/* Légende + actions */}
+      {/* Légende */}
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-3 text-sm">
           <span className="inline-flex items-center gap-1">
             <span className="inline-block h-3 w-3 rounded bg-green-200 ring-1 ring-green-400" />
             pas cher
           </span>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
           <span className="inline-flex items-center gap-1">
             <span className="inline-block h-3 w-3 rounded bg-yellow-200 ring-1 ring-yellow-400" />
             moyen
           </span>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
           <span className="inline-flex items-center gap-1">
             <span className="inline-block h-3 w-3 rounded bg-rose-200 ring-1 ring-rose-400" />
             cher
           </span>
         </div>
-
-        <div className="ml-auto flex items-center gap-2">
-          <div className="rounded border">
-            <button
-              className={`px-3 py-1 ${view === "week" ? "bg-black text-white" : ""}`}
-              onClick={() => setView("week")}
-              type="button"
-            >
-              Semaine
-            </button>
-            <button
-              className={`px-3 py-1 ${view === "month" ? "bg-black text-white" : ""}`}
-              onClick={() => setView("month")}
-              type="button"
-            >
-              Mois
-            </button>
-          </div>
-
-          <button
-            onClick={doShare}
-            type="button"
-            className="rounded border px-3 py-1"
-            title="Partager"
-          >
-            🔗 Partager
-          </button>
-        </div>
       </div>
 
       {/* Calendriers */}
       {loadingCal ? (
-        <div className="py-8 text-center text-sm text-gray-500">Chargement du calendrier…</div>
+        <div className="py-8 text-center text-sm text-gray-500">
+          Chargement du calendrier…
+        </div>
       ) : view === "week" ? (
         <WeekView />
       ) : (
@@ -998,7 +884,7 @@ export default function SearchPage() {
       <Timeline />
       <ResultsList />
 
-      {/* petit lien debug */}
+      {/* petit lien debug (pas de Link typé pour éviter l’erreur) */}
       <div className="mt-8 text-xs text-gray-500">
         <a className="underline" href="/api/ping">
           API ping
