@@ -425,80 +425,98 @@ export default function SearchClient() {
 
   // ------------- RENDUS --------------
 
-  const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
-    const cls =
-      classifyPrice(value, calStats.min, calStats.max) === "low"
-        ? "bg-green-100 border-green-300"
-        : classifyPrice(value, calStats.min, calStats.max) === "mid"
-        ? "bg-yellow-100 border-yellow-300"
-        : value == null
-        ? "bg-gray-100 border-gray-300 text-gray-400"
-        : "bg-rose-100 border-rose-300";
-    return (
-      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}>
-        {value == null ? "—" : `${value} €`}
-      </div>
-    );
-  };
+// --- PriceBadge compact ---
+const PriceBadge: React.FC<{ value: number | null; compact?: boolean }> = ({ value, compact }) => {
+  const cls =
+    classifyPrice(value, calStats.min, calStats.max) === "low"
+      ? "bg-green-100 border-green-300"
+      : classifyPrice(value, calStats.min, calStats.max) === "mid"
+      ? "bg-yellow-100 border-yellow-300"
+      : value == null
+      ? "bg-gray-100 border-gray-300 text-gray-400"
+      : "bg-rose-100 border-rose-300";
 
-  const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
-    const key = fmtDateLocal(d);
-    const info = patchedCalendar[key];
-    const selected = key === dateStr;
-    return (
-      <button
-        onClick={() => selectDay(d)}
-        className={`rounded border ${selected ? "ring-2 ring-blue-400" : ""} px-2 py-2 hover:shadow transition`}
-        title={key}
-      >
-        <div className={`mb-1 text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
-        <div className={compact ? "text-base" : ""}>
-          <PriceBadge value={info?.prix ?? null} />
-        </div>
-      </button>
-    );
-  };
+  const padY = compact ? "py-2" : "py-6";
+  const padX = compact ? "px-3" : "px-6";
+  const txt  = compact ? "text-base" : "text-xl";
 
-  const WeekView = () => (
-    <div className="mt-4">
-      <div className="mb-2 grid grid-cols-7 gap-3 text-center text-xs text-gray-500">
-        {frenchWeekLabels.map((w, i) => (
-          <div key={frenchWeekLetters[i]}>{w}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-3">
-        {weekDays.map((d) => (
-          <DayTile key={fmtDateLocal(d)} d={d} />
-        ))}
-      </div>
+  return (
+    <div className={`rounded border ${cls} ${padX} ${padY} text-center ${txt} font-medium`}>
+      {value == null ? "—" : `${value} €`}
     </div>
   );
+};
 
-  const MonthView = () => (
-    <div className="mt-4">
-      <div className="mb-3 flex items-center gap-2">
-        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
-        <div className="min-w-[180px] text-center font-medium">
-          {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
-        </div>
-        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
+// --- DayTile compact + hauteur stable ---
+const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
+  const key = fmtDateLocal(d);
+  const info = patchedCalendar[key];
+  const selected = key === dateStr;
+
+  return (
+    <button
+      onClick={() => selectDay(d)}
+      title={key}
+      className={[
+        "rounded border transition hover:shadow",
+        // hauteur stable + layout
+        compact ? "h-24 sm:h-28" : "h-32 md:h-32",
+        "flex flex-col justify-between px-2 py-2",
+        selected ? "ring-2 ring-blue-400" : "",
+      ].join(" ")}
+    >
+      <div className={`text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
+      <div className="mt-1">
+        <PriceBadge value={info?.prix ?? null} compact={compact} />
       </div>
-      <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
-        {frenchWeekLabels.map((w, i) => (
-          <div key={`m-${frenchWeekLetters[i]}`}>{w}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-2">
-        {monthDays.map((d, i) =>
-          d ? (
-            <DayTile key={fmtDateLocal(d)} d={d} compact />
-          ) : (
-            <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30">&nbsp;</div>
-          )
-        )}
-      </div>
-    </div>
+    </button>
   );
+};
+
+// --- WeekView : on passe compact ---
+const WeekView = () => (
+  <div className="mt-4">
+    <div className="mb-2 grid grid-cols-7 gap-3 text-center text-xs text-gray-500">
+      {["L", "M", "M", "J", "V", "S", "D"].map((w, i) => (
+        <div key={`w-${i}`}>{w}</div>
+      ))}
+    </div>
+    <div className="grid grid-cols-7 gap-3">
+      {weekDays.map((d) => (
+        <DayTile key={fmtDateLocal(d)} d={d} compact />
+      ))}
+    </div>
+  </div>
+);
+
+// --- MonthView : compact aussi ---
+const MonthView = () => (
+  <div className="mt-4">
+    <div className="mb-3 flex items-center gap-2">
+      <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
+      <div className="min-w-[180px] text-center font-medium">
+        {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+      </div>
+      <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
+    </div>
+
+    <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
+      {["L", "M", "M", "J", "V", "S", "D"].map((w, i) => (
+        <div key={`m-${i}`}>{w}</div>
+      ))}
+    </div>
+
+    <div className="grid grid-cols-7 gap-2">
+      {monthDays.map((d, i) =>
+        d ? (
+          <DayTile key={fmtDateLocal(d)} d={d} compact />
+        ) : (
+          <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30">&nbsp;</div>
+        )
+      )}
+    </div>
+  </div>
+);
 
   // MINI CALENDRIER — pleine case colorée, **sans prix**
   const MiniCalendar: React.FC = () => {
