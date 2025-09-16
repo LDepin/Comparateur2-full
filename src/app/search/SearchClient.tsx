@@ -6,20 +6,20 @@ import React, {
   useMemo,
   useRef,
   useState,
-  CSSProperties,
 } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
-// ---------------------------
-// Types & helpers
-// ---------------------------
+/* ---------------------------
+   Types & helpers
+--------------------------- */
 
 type CalendarDay = { prix: number | null; disponible: boolean };
 type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, disponible }
 
-type SortKey = "price" | "duration";
+type SortKey = "price" | "duration" | "depart";
 type ViewMode = "week" | "month";
 
+type FlightRaw = any;
 type Flight = {
   prix: number;
   compagnie?: string;
@@ -34,43 +34,31 @@ type Flight = {
 };
 
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-
-// IMPORTANT : format local (France) → évite le décalage d’un jour
-const fmtDateLocal = (d: Date) =>
-  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-const parseYMDLocal = (s?: string): Date | undefined => {
-  if (!s) return undefined;
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return undefined;
-  const y = parseInt(m[1], 10);
-  const mo = parseInt(m[2], 10) - 1;
-  const da = parseInt(m[3], 10);
-  const d = new Date(y, mo, da, 0, 0, 0, 0);
-  if (Number.isNaN(d.getTime())) return undefined;
-  return d;
-};
-
 const toLocalHHMM = (iso?: string) => {
   if (!iso) return "—";
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return "—";
   return `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
 };
-
 const parseISOorLocal = (v?: string) => {
   if (!v) return undefined;
   const d = new Date(v);
   if (!Number.isNaN(d.getTime())) return d;
-  // fallback HH:MM → aujourd’hui local
   if (/^\d{2}:\d{2}$/.test(v)) {
     const now = new Date();
     const [h, m] = v.split(":").map(Number);
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    return new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      h,
+      m,
+      0,
+      0
+    );
   }
   return undefined;
 };
-
 const parsePTdur = (pt?: string) => {
   if (!pt || typeof pt !== "string" || !pt.startsWith("PT")) return undefined;
   let h = 0,
@@ -82,20 +70,33 @@ const parsePTdur = (pt?: string) => {
   if (mMatch) m = parseInt(mMatch[1], 10);
   return h * 60 + m;
 };
-
 const minutesDiff = (a?: Date, b?: Date) => {
   if (!a || !b) return undefined;
   return Math.max(1, Math.round((b.getTime() - a.getTime()) / 60000));
 };
-
 const monthKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 const firstDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
-const lastDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+const lastDayOfMonth = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth() + 1, 0);
 
-const frenchWeekLetters = ["L", "M", "M2", "J", "V", "S", "D"]; // clés stables
+// format local YYYY-MM-DD (sans fuseau)
+const fmtDateLocal = (d: Date) => {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
+// parse "YYYY-MM-DD" en Date locale (00:00 locale)
+const parseYMDLocal = (s?: string) => {
+  if (!s) return undefined;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return undefined;
+  const y = Number(m[1]);
+  const mm = Number(m[2]);
+  const dd = Number(m[3]);
+  return new Date(y, mm - 1, dd, 0, 0, 0, 0);
+};
+
+const frenchWeekLetters = ["L", "M", "M2", "J", "V", "S", "D"];
 const frenchWeekLabels = ["L", "M", "M", "J", "V", "S", "D"];
 
-// palette simple par "bon marché / moyen / cher"
 function classifyPrice(prix: number | null, min: number, max: number) {
   if (prix == null) return "empty";
   if (max === min) return "low";
@@ -105,70 +106,47 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
-const tileBgClassForPrice = (prix: number | null, min: number, max: number) => {
-  const c = classifyPrice(prix, min, max);
-  switch (c) {
-    case "low":
-      return "bg-green-100 border-green-300";
-    case "mid":
-      return "bg-yellow-100 border-yellow-300";
-    case "high":
-      return "bg-rose-100 border-rose-300";
-    default:
-      return "bg-gray-100 border-gray-300 text-gray-400";
-  }
-};
-
-// ---------------------------
-// Normalisation des vols
-// ---------------------------
-
-function normalizeFlight(r: unknown): Flight {
-  const v = r as Record<string, unknown>;
-  const prixRaw = v?.["prix"];
-  const prix = typeof prixRaw === "number" ? prixRaw : Number(prixRaw ?? NaN);
-
-  const vols = Array.isArray(v?.["vols"]) ? (v["vols"] as Array<Record<string, unknown>>) : [];
+function normalizeFlight(r: FlightRaw): Flight {
+  const price = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
 
   const depISO =
-    (v["depart_iso"] as string | undefined) ??
-    (v["departISO"] as string | undefined) ??
-    (v["heure_depart"] as string | undefined) ??
-    (vols[0]?.["depart_iso"] as string | undefined) ??
-    (vols[0]?.["departISO"] as string | undefined);
-
+    r?.depart_iso ??
+    r?.departISO ??
+    r?.heure_depart ??
+    r?.vols?.[0]?.depart_iso ??
+    r?.vols?.[0]?.departISO;
   const arrISO =
-    (v["arrivee_iso"] as string | undefined) ??
-    (v["arriveeISO"] as string | undefined) ??
-    (v["heure_arrivee"] as string | undefined) ??
-    (vols[vols.length - 1]?.["arrivee_iso"] as string | undefined) ??
-    (vols[vols.length - 1]?.["arriveeISO"] as string | undefined);
+    r?.arrivee_iso ??
+    r?.arriveeISO ??
+    r?.heure_arrivee ??
+    r?.vols?.[r?.vols?.length - 1]?.arrivee_iso ??
+    r?.vols?.[r?.vols?.length - 1]?.arriveeISO;
 
   const dep = parseISOorLocal(depISO);
   const arr = parseISOorLocal(arrISO);
 
   const dureeMin =
-    typeof v?.["duree_minutes"] === "number"
-      ? (v["duree_minutes"] as number)
-      : parsePTdur(v?.["duree"] as string | undefined) ?? minutesDiff(dep, arr);
+    typeof r?.duree_minutes === "number"
+      ? r.duree_minutes
+      : parsePTdur(r?.duree) ?? minutesDiff(dep, arr);
 
   const compagnie =
-    (v["compagnie"] as string | undefined) ??
-    (Array.isArray(v?.["compagnies"]) && (v["compagnies"] as string[]).length
-      ? (v["compagnies"] as string[]).join("/")
+    r?.compagnie ??
+    (Array.isArray(r?.compagnies) && r.compagnies.length
+      ? r.compagnies.join("/")
       : undefined);
 
-  const escales =
-    typeof v?.["escales"] === "number"
-      ? (v["escales"] as number)
-      : Math.max(0, vols.length - 1);
-
   return {
-    prix: Number.isFinite(prix) ? Math.round(prix) : 0,
+    prix: Number.isFinite(price) ? Math.round(price) : 0,
     compagnie,
-    escales,
-    um_ok: !!v?.["um_ok"],
-    animal_ok: !!v?.["animal_ok"],
+    escales:
+      typeof r?.escales === "number"
+        ? r.escales
+        : Array.isArray(r?.vols)
+        ? Math.max(0, r.vols.length - 1)
+        : undefined,
+    um_ok: !!r?.um_ok,
+    animal_ok: !!r?.animal_ok,
     departISO: dep ? dep.toISOString() : undefined,
     arriveeISO: arr ? arr.toISOString() : undefined,
     departText: dep ? toLocalHHMM(dep.toISOString()) : "—",
@@ -177,33 +155,21 @@ function normalizeFlight(r: unknown): Flight {
   };
 }
 
-// ---------------------------
-// Composant principal (client)
-// ---------------------------
-// Détecte le thème système (dark / light)
-function useIsDark(): boolean {
-  const [dark, setDark] = React.useState(false);
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setDark(mq.matches);
-    onChange();
-    if (mq.addEventListener) mq.addEventListener("change", onChange);
-    else mq.addListener(onChange);
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
-      else mq.removeListener(onChange as any);
-    };
-  }, []);
-  return dark;
-}
-export default function SearchClient(): React.ReactElement {
+/* ---------------------------
+   Composant principal
+--------------------------- */
+
+export default function SearchClient(): JSX.Element {
+  const router = useRouter();
   const params = useSearchParams();
-    const isDark = useIsDark();
-  // état des champs
+
+  // états champs
   const [origin, setOrigin] = useState(params.get("origin") || "PAR");
-  const [destination, setDestination] = useState(params.get("destination") || "BCN");
-  const [dateStr, setDateStr] = useState(params.get("date") || fmtDateLocal(new Date()));
+  const [destination, setDestination] = useState(
+    params.get("destination") || "BCN"
+  );
+  const initialDate = parseYMDLocal(params.get("date") || undefined) ?? new Date();
+  const [dateStr, setDateStr] = useState<string>(fmtDateLocal(initialDate));
   const [sort, setSort] = useState<SortKey>(
     (params.get("sort") as SortKey) || "price"
   );
@@ -211,7 +177,7 @@ export default function SearchClient(): React.ReactElement {
   const [um, setUm] = useState(params.get("um") === "1");
   const [pets, setPets] = useState(params.get("pets") === "1");
   const [view, setView] = useState<ViewMode>(
-    (params.get("view") as ViewMode) || "week"
+    (params.get("view") as ViewMode) || "month"
   );
 
   // data
@@ -220,19 +186,22 @@ export default function SearchClient(): React.ReactElement {
   const [loadingCal, setLoadingCal] = useState(false);
   const [loadingRes, setLoadingRes] = useState(false);
 
-  // sélection d’un résultat (pour la timeline + surbrillance)
+  // sélection d’un résultat (timeline + carte)
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
-  // mini-calendrier popover
+  // mini-calendrier
   const [showMini, setShowMini] = useState(false);
   const miniRef = useRef<HTMLDivElement | null>(null);
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
   // mois affiché
-  const initialDate = parseYMDLocal(dateStr) ?? new Date();
   const [monthCursor, setMonthCursor] = useState<Date>(() => initialDate);
 
-  // fermer le mini-cal au clic extérieur
+  // helper local : format YYYY-MM-DD en local
+  const fmtDate = (d: Date): string => fmtDateLocal(d);
+
+  // fermer le mini-calendrier au clic extérieur
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (
@@ -249,7 +218,7 @@ export default function SearchClient(): React.ReactElement {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [showMini]);
 
-  // URL partageable (client) — History API (évite l’erreur RouteImpl de Next)
+  // URL partageable (client)
   const currentShareURL = useMemo(() => {
     const p = new URLSearchParams();
     p.set("origin", origin);
@@ -263,13 +232,14 @@ export default function SearchClient(): React.ReactElement {
     return `/search?${p.toString()}`;
   }, [origin, destination, dateStr, sort, direct, um, pets, view]);
 
+  // pousser l’URL (sans rechargement)
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", currentShareURL);
-    }
-  }, [currentShareURL]);
+    if (typeof window === "undefined") return;
+    const abs = new URL(currentShareURL, window.location.origin);
+    router.replace(abs as unknown as string); // RouteImpl<string> vs URL — cast sûr côté client
+  }, [router, currentShareURL]);
 
-  // fetch calendrier du mois courant
+  // fetch calendrier
   const loadCalendar = useCallback(
     async (cursor: Date) => {
       setLoadingCal(true);
@@ -277,10 +247,12 @@ export default function SearchClient(): React.ReactElement {
         const m = monthKey(cursor);
         const url = `/api/calendar?origin=${encodeURIComponent(
           origin
-        )}&destination=${encodeURIComponent(destination)}&month=${m}`;
+        )}&destination=${encodeURIComponent(destination)}&month=${m}${
+          direct ? "&direct=1" : ""
+        }${um ? "&um=1" : ""}${pets ? "&pets=1" : ""}`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("calendar upstream");
-        const data = (await r.json()) as { calendar?: CalendarMap };
+        const data = await r.json();
         setCalendar(data.calendar || {});
       } catch {
         setCalendar({});
@@ -288,7 +260,7 @@ export default function SearchClient(): React.ReactElement {
         setLoadingCal(false);
       }
     },
-    [origin, destination]
+    [origin, destination, direct, um, pets]
   );
 
   // fetch résultats
@@ -296,41 +268,43 @@ export default function SearchClient(): React.ReactElement {
     async (dStr: string) => {
       setLoadingRes(true);
       try {
-        const url =
-          `/api/search?origin=${encodeURIComponent(origin)}` +
-          `&destination=${encodeURIComponent(destination)}` +
-          `&date=${dStr}` +
-          (direct ? "&direct=1" : "") +
-          (um ? "&um=1" : "") +
-          (pets ? "&pets=1" : "");
+        const url = `/api/search?origin=${encodeURIComponent(
+          origin
+        )}&destination=${encodeURIComponent(destination)}&date=${dStr}${
+          direct ? "&direct=1" : ""
+        }${um ? "&um=1" : ""}${pets ? "&pets=1" : ""}`;
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("search upstream");
-        const raw = (await r.json()) as { results?: unknown[] };
+        const raw = await r.json();
         let list: Flight[] = Array.isArray(raw?.results)
           ? raw.results.map(normalizeFlight)
           : [];
+
+        // filtre direct si demandé (sécurité)
         if (direct) list = list.filter((x) => (x.escales ?? 0) === 0);
 
-        // tri
-        list.sort((a, b) =>
-          sort === "price"
-            ? a.prix - b.prix
-            : (a.dureeMin ?? 9e9) - (b.dureeMin ?? 9e9)
-        );
+        // tri enrichi
+        list.sort((a, b) => {
+          if (sort === "price") return a.prix - b.prix;
+          if (sort === "duration")
+            return (a.dureeMin ?? 9e9) - (b.dureeMin ?? 9e9);
+          // "depart"
+          const ad = parseISOorLocal(a.departISO)?.getTime() ?? 9e13;
+          const bd = parseISOorLocal(b.departISO)?.getTime() ?? 9e13;
+          return ad - bd;
+        });
 
         setResults(list);
-        setSelectedIndex(list.length > 0 ? 0 : -1);
       } catch {
         setResults([]);
-        setSelectedIndex(-1);
       } finally {
         setLoadingRes(false);
       }
     },
-    [origin, destination, sort, direct, um, pets]
+    [origin, destination, direct, um, pets, sort]
   );
 
-  // init : charge mois + résultats
+  // init / rafraîchissements
   useEffect(() => {
     loadCalendar(parseYMDLocal(dateStr) ?? new Date());
   }, [loadCalendar, dateStr]);
@@ -339,41 +313,20 @@ export default function SearchClient(): React.ReactElement {
     loadResults(dateStr);
   }, [loadResults, dateStr]);
 
-  // semaine affichée autour de dateStr (L → D) — avec parsing local
-  const weekDays = useMemo(() => {
-    const base = parseYMDLocal(dateStr) ?? new Date();
-    // lundi=0 … dimanche=6
-    const js = (base.getDay() + 6) % 7;
-    const monday = new Date(base);
-    monday.setDate(base.getDate() - js);
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(monday);
-      d.setDate(monday.getDate() + i);
-      return d;
-    });
-  }, [dateStr]);
+  // recalibrage sélection résultats (timeline/carte)
+  useEffect(() => {
+    if (results.length === 0) setSelectedIndex(-1);
+    else if (selectedIndex < 0 || selectedIndex >= results.length)
+      setSelectedIndex(0);
+  }, [results, selectedIndex]);
 
-  // vue mois : jours à afficher (cases vides incluses pour aligner)
-  const monthDays = useMemo(() => {
-    const first = firstDayOfMonth(monthCursor);
-    const last = lastDayOfMonth(monthCursor);
-    const startCol = (first.getDay() + 6) % 7; // 0 = lundi
-    const days: (Date | null)[] = [];
-    for (let i = 0; i < startCol; i++) days.push(null);
-    for (let d = 1; d <= last.getDate(); d++) {
-      days.push(new Date(monthCursor.getFullYear(), monthCursor.getMonth(), d));
-    }
-    return days;
-  }, [monthCursor]);
-
-  // patch calendrier avec min du jour sélectionné → cohérence visuelle
+  // patch calendrier avec min du jour sélectionné (pour cohérence couleur)
   const patchedCalendar = useMemo(() => {
     const copy: CalendarMap = { ...calendar };
-    const dayMin = results.length > 0 ? Math.min(...results.map((r) => r.prix)) : null;
+    const dayMin =
+      results.length > 0 ? Math.min(...results.map((r) => r.prix)) : null;
     const key = dateStr;
-    if (copy[key]) {
-      copy[key] = { prix: dayMin, disponible: copy[key].disponible };
-    }
+    if (copy[key]) copy[key] = { prix: dayMin, disponible: copy[key].disponible };
     return copy;
   }, [calendar, results, dateStr]);
 
@@ -385,21 +338,6 @@ export default function SearchClient(): React.ReactElement {
     const max = values.length ? Math.max(...values) : 0;
     return { min, max };
   }, [patchedCalendar]);
-
-  // submit manuel (bouton Rechercher)
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    loadCalendar(parseYMDLocal(dateStr) ?? new Date());
-    loadResults(dateStr);
-  };
-
-  // sélection d’un jour
-  const selectDay = (d: Date) => {
-    const s = fmtDateLocal(d);
-    setDateStr(s);
-    setMonthCursor(d);
-    // fetch via useEffect
-  };
 
   // navigation mois
   const goPrevMonth = () => {
@@ -415,6 +353,39 @@ export default function SearchClient(): React.ReactElement {
     loadCalendar(d);
   };
 
+  // sélection d’un jour
+  const selectDay = (d: Date) => {
+    const s = fmtDate(d);
+    setDateStr(s);
+    setMonthCursor(d);
+  };
+
+  // semaine autour de dateStr
+  const weekDays = useMemo(() => {
+    const base = parseYMDLocal(dateStr) ?? new Date();
+    const js = (base.getDay() + 6) % 7; // lundi=0
+    const monday = new Date(base);
+    monday.setDate(base.getDate() - js);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return d;
+    });
+  }, [dateStr]);
+
+  // grille mois avec jours vides
+  const monthDays = useMemo(() => {
+    const first = firstDayOfMonth(monthCursor);
+    const last = lastDayOfMonth(monthCursor);
+    const startCol = (first.getDay() + 6) % 7;
+    const days: (Date | null)[] = [];
+    for (let i = 0; i < startCol; i++) days.push(null);
+    for (let d = 1; d <= last.getDate(); d++) {
+      days.push(new Date(monthCursor.getFullYear(), monthCursor.getMonth(), d));
+    }
+    return days;
+  }, [monthCursor]);
+
   // partage
   const doShare = async () => {
     const base =
@@ -423,15 +394,27 @@ export default function SearchClient(): React.ReactElement {
         : "";
     const url = `${base}${currentShareURL}`;
     try {
-      const nav = navigator as unknown as { share?: (data: { title: string; text: string; url: string }) => Promise<void>; clipboard?: { writeText?: (t: string) => Promise<void> } };
-      if (typeof nav.share === "function") {
-        await nav.share({ title: "Comparateur — vols", text: "Résultats de recherche", url });
-      } else if (nav.clipboard?.writeText) {
-        await nav.clipboard.writeText(url);
-        alert("Lien copié dans le presse-papiers !");
+      if (
+        typeof navigator !== "undefined" &&
+        "share" in navigator &&
+        // @ts-expect-error — API Web Share non typée partout
+        typeof navigator.share === "function"
+      ) {
+        // @ts-expect-error — API Web Share non typée partout
+        await navigator.share({
+          title: "Comparateur — vols",
+          text: "Résultats de recherche",
+          url,
+        });
       } else {
-        window.history.replaceState(null, "", currentShareURL);
-        alert("Lien prêt dans la barre d’adresse (copie manuelle).");
+        const nav: any = navigator as any;
+        if (nav?.clipboard?.writeText) {
+          await nav.clipboard.writeText(url);
+          alert("Lien copié dans le presse-papiers !");
+        } else {
+          window.history.replaceState(null, "", currentShareURL);
+          alert("Lien prêt dans la barre d’adresse (copie manuelle).");
+        }
       }
     } catch {
       window.history.replaceState(null, "", currentShareURL);
@@ -439,111 +422,109 @@ export default function SearchClient(): React.ReactElement {
     }
   };
 
-  // ------------- RENDUS --------------
+  /* ---------------------------
+     RENDUS
+  --------------------------- */
 
-// --- PriceBadge : contraste renforcé en dark ---
-const PriceBadge: React.FC<{ value: number | null; compact?: boolean }> = ({ value, compact }) => {
-  // palette lisible selon le thème
-  let clsBase = "";
-  const cat = classifyPrice(value, calStats.min, calStats.max);
-  if (value == null) {
-    clsBase = isDark ? "bg-gray-800 border-gray-600 text-gray-400" : "bg-gray-100 border-gray-300 text-gray-400";
-  } else if (cat === "low") {
-    clsBase = isDark ? "bg-green-500/25 border-green-400 text-green-100" : "bg-green-100 border-green-300 text-gray-900";
-  } else if (cat === "mid") {
-    clsBase = isDark ? "bg-yellow-500/25 border-yellow-400 text-yellow-100" : "bg-yellow-100 border-yellow-300 text-gray-900";
-  } else {
-    clsBase = isDark ? "bg-rose-500/25 border-rose-400 text-rose-100" : "bg-rose-100 border-rose-300 text-gray-900";
-  }
+  // helper local : format "YYYY-MM-DD" en heure locale (utilisé dans DayTile)
+  const fmtDate_compat = (d: Date): string => fmtDateLocal(d);
 
-  const padY = compact ? "py-2" : "py-6";
-  const padX = compact ? "px-3" : "px-6";
-  const txt  = compact ? "text-base" : "text-xl";
+  const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
+    const tone = classifyPrice(value, calStats.min, calStats.max);
+    const cls =
+      tone === "low"
+        ? "bg-green-100 border-green-300"
+        : tone === "mid"
+        ? "bg-yellow-100 border-yellow-300"
+        : value == null
+        ? "bg-gray-100 border-gray-300 text-gray-400"
+        : "bg-rose-100 border-rose-300";
+    return (
+      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}>
+        {value == null ? "—" : `${value} €`}
+      </div>
+    );
+  };
 
-  return (
-    <div className={`rounded border ${clsBase} ${padX} ${padY} text-center ${txt} font-medium`}>
-      {value == null ? "—" : `${value} €`}
+  const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
+    const key = fmtDate_compat(d);
+    const info = patchedCalendar[key];
+    const selected = key === dateStr;
+    return (
+      <button
+        onClick={() => selectDay(d)}
+        title={key}
+        className={[
+          "rounded border transition hover:shadow",
+          // hauteur uniforme (mobile > desktop)
+          "h-[72px] sm:h-[84px] md:h-[96px]",
+          // contenu : numéro en haut gauche + badge centré
+          "flex flex-col justify-between",
+          "px-2 py-2",
+          selected ? "ring-2 ring-blue-400" : "",
+        ].join(" ")}
+      >
+        <div className={`text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
+        <div className={compact ? "text-base" : ""}>
+          <PriceBadge value={info?.prix ?? null} />
+        </div>
+      </button>
+    );
+  };
+
+  const WeekView = () => (
+    <div className="mt-4">
+      <div className="mb-2 grid grid-cols-7 gap-3 text-center text-xs text-gray-500">
+        {frenchWeekLabels.map((w, i) => (
+          <div key={frenchWeekLetters[i]}>{w}</div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-3">
+        {weekDays.map((d) => (
+          <DayTile key={fmtDate_compat(d)} d={d} />
+        ))}
+      </div>
     </div>
   );
-};
 
-// --- DayTile : bordures adaptées au thème + hauteur stable ---
-const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
-  const key = fmtDateLocal(d);
-  const info = patchedCalendar[key];
-  const selected = key === dateStr;
-
-  const borderTone = isDark ? "border-gray-700" : "border-gray-200";
-
-  return (
-    <button
-      onClick={() => selectDay(d)}
-      title={key}
-      className={[
-        "rounded border transition hover:shadow",
-        borderTone,
-        compact ? "h-24 sm:h-28" : "h-32 md:h-32",
-        "flex flex-col justify-between px-2 py-2",
-        selected ? "ring-2 ring-blue-400" : "",
-      ].join(" ")}
-    >
-      <div className={`text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
-      <div className="mt-1">
-        <PriceBadge value={info?.prix ?? null} compact={compact} />
+  const MonthView = () => (
+    <div className="mt-4">
+      <div className="mb-3 flex items-center gap-2">
+        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">
+          ◀
+        </button>
+        <div className="min-w-[180px] text-center font-medium">
+          {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+        </div>
+        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">
+          ▶
+        </button>
       </div>
-    </button>
+      <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
+        {frenchWeekLabels.map((w, i) => (
+          <div key={`m-${frenchWeekLetters[i]}`}>{w}</div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-2">
+        {monthDays.map((d, i) =>
+          d ? (
+            <DayTile key={fmtDate_compat(d)} d={d} compact />
+          ) : (
+            <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30 h-[72px] sm:h-[84px] md:h-[96px]" />
+          )
+        )}
+      </div>
+    </div>
   );
-};
 
-// --- WeekView : on passe compact ---
-const WeekView = () => (
-  <div className="mt-4">
-    <div className="mb-2 grid grid-cols-7 gap-3 text-center text-xs text-gray-500">
-      {["L", "M", "M", "J", "V", "S", "D"].map((w, i) => (
-        <div key={`w-${i}`}>{w}</div>
-      ))}
-    </div>
-    <div className="grid grid-cols-7 gap-3">
-      {weekDays.map((d) => (
-        <DayTile key={fmtDateLocal(d)} d={d} compact />
-      ))}
-    </div>
-  </div>
-);
-
-// --- MonthView : compact aussi ---
-const MonthView = () => (
-  <div className="mt-4">
-    <div className="mb-3 flex items-center gap-2">
-      <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
-      <div className="min-w-[180px] text-center font-medium">
-        {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
-      </div>
-      <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
-    </div>
-
-    <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
-      {["L", "M", "M", "J", "V", "S", "D"].map((w, i) => (
-        <div key={`m-${i}`}>{w}</div>
-      ))}
-    </div>
-
-    <div className="grid grid-cols-7 gap-2">
-      {monthDays.map((d, i) =>
-        d ? (
-          <DayTile key={fmtDateLocal(d)} d={d} compact />
-        ) : (
-          <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30">&nbsp;</div>
-        )
-      )}
-    </div>
-  </div>
-);
-
-  // MINI CALENDRIER — pleine case colorée, **sans prix**
   const MiniCalendar: React.FC = () => {
     if (!showMini) return null;
-    const style: CSSProperties = { position: "absolute", zIndex: 50, marginTop: 6, width: 320 };
+    const style: React.CSSProperties = {
+      position: "absolute",
+      zIndex: 50,
+      marginTop: 6,
+      width: 320,
+    };
     return (
       <div ref={miniRef} style={style} className="rounded-lg border bg-white p-3 shadow">
         <div className="mb-2 flex items-center justify-between">
@@ -562,23 +543,35 @@ const MonthView = () => (
           {monthDays.map((d, i) =>
             d ? (
               <button
-                key={`mini-${fmtDateLocal(d)}`}
+                key={`mini-${fmtDate_compat(d)}`}
                 onClick={() => {
                   selectDay(d);
                   setShowMini(false);
                 }}
-                className={
-                  "rounded border px-2 py-2 text-left " +
-                  tileBgClassForPrice(patchedCalendar[fmtDateLocal(d)]?.prix ?? null, calStats.min, calStats.max) +
-                  (fmtDateLocal(d) === dateStr ? " ring-2 ring-blue-400" : "")
-                }
-                title={
-                  patchedCalendar[fmtDateLocal(d)]?.prix == null
-                    ? "Indisponible"
-                    : `${patchedCalendar[fmtDateLocal(d)]?.prix} €`
-                }
+                className={[
+                  "rounded border px-1 py-1 text-left h-[32px]",
+                  fmtDate_compat(d) === dateStr ? "ring-2 ring-blue-400" : "",
+                ].join(" ")}
+                title={fmtDate_compat(d)}
               >
-                <div className="text-[12px] font-medium">{d.getDate()}</div>
+                <div className="text-[11px]">{d.getDate()}</div>
+                {/* pastille couleur (pas de prix) */}
+                {(() => {
+                  const tone = classifyPrice(
+                    patchedCalendar[fmtDate_compat(d)]?.prix ?? null,
+                    calStats.min,
+                    calStats.max
+                  );
+                  const bg =
+                    tone === "low"
+                      ? "bg-green-200"
+                      : tone === "mid"
+                      ? "bg-yellow-200"
+                      : tone === "empty"
+                      ? "bg-gray-200"
+                      : "bg-rose-200";
+                  return <div className={`mt-0.5 h-1.5 w-4 rounded ${bg}`} />;
+                })()}
               </button>
             ) : (
               <div key={`mini-empty-${i}`} />
@@ -589,16 +582,30 @@ const MonthView = () => (
     );
   };
 
+  const scrollToIdx = (idx: number) => {
+    const el = itemRefs.current[idx];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  /* Timeline cliquable */
   const Timeline: React.FC = () => {
     const start = parseYMDLocal(dateStr) ?? new Date();
-    const dayStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0).getTime();
+    const dayStart = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+      0,
+      0,
+      0,
+      0
+    ).getTime();
     const dayEnd = dayStart + 24 * 3600 * 1000;
 
     const bars = results
       .map((r) => {
         const dep = parseISOorLocal(r.departISO || "");
         const arr = parseISOorLocal(r.arriveeISO || "");
-        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000; // 08:00 fallback
+        const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000;
         const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
         const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
         const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
@@ -606,93 +613,124 @@ const MonthView = () => (
         const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
         return { left, width };
       })
-      .filter((b) => Number.isFinite(b.left) && Number.isFinite(b.width));
+      .filter((b) => isFinite(b.left) && isFinite(b.width));
 
-  return (
-  <div className="mt-6">
-    <div className={`mb-1 text-xs ${isDark ? "text-gray-300" : "text-gray-500"}`}>
-      Timeline (barre surlignée = résultat sélectionné)
-    </div>
+    return (
+      <div className="mt-6">
+        <div className="mb-1 text-xs text-gray-500">
+          Timeline (barre surlignée = résultat sélectionné)
+        </div>
+        <div className="relative h-4 sm:h-5 md:h-6 w-full rounded border bg-gray-50">
+          {bars.map((b, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => {
+                setSelectedIndex(i);
+                scrollToIdx(i);
+              }}
+              className={`absolute top-0 h-full rounded focus:outline-none ${
+                i === selectedIndex ? "bg-blue-600" : "bg-blue-300/80"
+              }`}
+              style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
+              title={`Résultat ${i + 1}`}
+            />
+          ))}
+        </div>
+        <div className="mt-1 flex justify-between text-[10px] text-gray-500">
+          <span>00:00</span>
+          <span>06:00</span>
+          <span>12:00</span>
+          <span>18:00</span>
+          <span>24:00</span>
+        </div>
+      </div>
+    );
+  };
 
-    <div
-      className={`relative h-4 sm:h-5 md:h-6 w-full rounded border ${
-        isDark ? "bg-gray-800 border-gray-700" : "bg-gray-50"
-      }`}
-    >
-      {bars.map((b, i) => (
-        <div
-          key={i}
-          className={`absolute top-0 h-full rounded ${
-            i === selectedIndex
-              ? isDark ? "bg-blue-500" : "bg-blue-600"
-              : isDark ? "bg-blue-400/60" : "bg-blue-300/80"
-          }`}
-          style={{ left: `${b.left}%`, width: `${Math.max(b.width, 2)}%` }}
-          title={`Vol ${i + 1}`}
-        />
-      ))}
+  const SkeletonCard = () => (
+    <div className="animate-pulse rounded border p-3">
+      <div className="mb-2 h-4 w-24 rounded bg-gray-200" />
+      <div className="mb-2 h-3 w-64 rounded bg-gray-200" />
+      <div className="flex gap-2">
+        <div className="h-6 w-16 rounded-full bg-gray-200" />
+        <div className="h-6 w-20 rounded-full bg-gray-200" />
+      </div>
     </div>
+  );
 
-    <div className={`mt-1 flex justify-between text-[10px] ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-      <span>00:00</span>
-      <span>06:00</span>
-      <span>12:00</span>
-      <span>18:00</span>
-      <span>24:00</span>
-    </div>
-  </div>
-);
-}
   const ResultsList = () => (
     <div className="mt-4 space-y-3">
       {loadingRes ? (
-        <div className="py-8 text-center text-sm text-gray-500">Recherche…</div>
+        <>
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </>
       ) : results.length === 0 ? (
         <div className="py-8 text-center text-sm text-gray-500">
-          Aucun résultat pour cette date (ou filtres trop restrictifs).
+          Aucun résultat pour cette date (ou pas encore de recherche).
         </div>
       ) : (
-        results.map((r, i) => (
-          <div
-            key={i}
-            onClick={() => setSelectedIndex(i)}
-            className={
-              "cursor-pointer rounded border p-3 transition " +
-              (i === selectedIndex ? "ring-2 ring-blue-400 border-blue-400 bg-blue-50/40" : "hover:shadow")
-            }
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") setSelectedIndex(i);
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <div className="text-lg font-semibold">{Math.round(r.prix)} €</div>
-              <div className="text-sm text-gray-600">{r.compagnie || "—"}</div>
+        results.map((r, i) => {
+          const directBadge =
+            typeof r.escales === "number" ? r.escales === 0 : false;
+          const selected = i === selectedIndex;
+          return (
+            <div
+              key={i}
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
+              className={`rounded border p-3 transition ${
+                selected ? "ring-2 ring-blue-400" : ""
+              }`}
+              onClick={() => {
+                setSelectedIndex(i);
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-semibold">{Math.round(r.prix)} €</div>
+                <div className="text-sm text-gray-600">{r.compagnie || "—"}</div>
+              </div>
+              <div className="mt-1 text-sm text-gray-700">
+                {r.departText} → {r.arriveeText} ·{" "}
+                {r.dureeMin
+                  ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min`
+                  : "—"}{" "}
+                · {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded-full border px-2 py-0.5">
+                  {directBadge ? "Direct" : "Avec escale(s)"}
+                </span>
+                <span className="rounded-full border px-2 py-0.5">🧒 UM</span>
+                <span className="rounded-full border px-2 py-0.5">🐾 Animaux</span>
+              </div>
             </div>
-            <div className="mt-1 text-sm text-gray-700">
-              {r.departText} → {r.arriveeText} ·{" "}
-              {r.dureeMin ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min` : "—"} ·{" "}
-              {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
-            </div>
-            <div className="mt-2 flex items-center gap-2 text-xs">
-              <span className="rounded-full border px-2 py-0.5">{(r.escales ?? 0) === 0 ? "Direct" : "Avec escale(s)"}</span>
-              <span className="rounded-full border px-2 py-0.5">{r.um_ok ? "🧒 UM OK" : "🧒 UM —"}</span>
-              <span className="rounded-full border px-2 py-0.5">{r.animal_ok ? "🐾 Animaux OK" : "🐾 Animaux —"}</span>
-            </div>
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );
 
-  // --------- Render
+  /* ---------------------------
+     Rendu principal
+  --------------------------- */
 
   return (
     <main className="mx-auto max-w-5xl p-4">
       <h1 className="mb-4 text-2xl font-semibold">Comparateur — vols</h1>
 
       {/* Formulaire */}
-      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-7">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          loadCalendar(parseYMDLocal(dateStr) ?? new Date());
+          loadResults(dateStr);
+        }}
+        className="grid grid-cols-1 gap-3 md:grid-cols-6"
+      >
         <div className="md:col-span-1">
           <label className="mb-1 block text-sm text-gray-600">Origine</label>
           <input
@@ -739,22 +777,32 @@ const MonthView = () => (
           >
             <option value="price">Prix croissant</option>
             <option value="duration">Durée croissante</option>
+            <option value="depart">Heure de départ (croiss.)</option>
           </select>
         </div>
 
-        <div className="md:col-span-2 grid grid-cols-3 items-end gap-2">
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} />
-            Direct
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={um} onChange={(e) => setUm(e.target.checked)} />
-            UM
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={pets} onChange={(e) => setPets(e.target.checked)} />
-            Animaux
-          </label>
+        <div className="flex items-end justify-between gap-2 md:col-span-1">
+          <div className="flex flex-col gap-1 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} />
+              Direct
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={um} onChange={(e) => setUm(e.target.checked)} />
+              UM
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={pets} onChange={(e) => setPets(e.target.checked)} />
+              Animaux
+            </label>
+          </div>
+
+          <button
+            type="submit"
+            className="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+          >
+            Rechercher
+          </button>
         </div>
       </form>
 
@@ -762,13 +810,16 @@ const MonthView = () => (
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-3 text-sm">
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded bg-green-200 ring-1 ring-green-400" /> pas cher
+            <span className="inline-block h-3 w-3 rounded bg-green-200 ring-1 ring-green-400" />
+            pas cher
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded bg-yellow-200 ring-1 ring-yellow-400" /> moyen
+            <span className="inline-block h-3 w-3 rounded bg-yellow-200 ring-1 ring-yellow-400" />
+            moyen
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block h-3 w-3 rounded bg-rose-200 ring-1 ring-rose-400" /> cher
+            <span className="inline-block h-3 w-3 rounded bg-rose-200 ring-1 ring-rose-400" />
+            cher
           </span>
         </div>
 
@@ -797,20 +848,29 @@ const MonthView = () => (
 
       {/* Calendriers */}
       {loadingCal ? (
-        <div className="py-8 text-center text-sm text-gray-500">Chargement du calendrier…</div>
+        <div className="py-8 text-center text-sm text-gray-500">
+          Chargement du calendrier…
+          <div className="mt-3 grid grid-cols-7 gap-2">
+            {Array.from({ length: 35 }).map((_, i) => (
+              <div key={i} className="h-[72px] sm:h-[84px] md:h-[96px] animate-pulse rounded border bg-gray-100" />
+            ))}
+          </div>
+        </div>
       ) : view === "week" ? (
         <WeekView />
       ) : (
         <MonthView />
       )}
 
-      {/* Timeline + liste */}
+      {/* Timeline + résultats */}
       <Timeline />
       <ResultsList />
 
       {/* petit lien debug */}
       <div className="mt-8 text-xs text-gray-500">
-        <a className="underline" href="/api/ping">API ping</a>
+        <a className="underline" href="/api/ping">
+          API ping
+        </a>
       </div>
     </main>
   );
