@@ -1,3 +1,4 @@
+// src/app/search/SearchClient.tsx
 "use client";
 
 import React, {
@@ -19,9 +20,9 @@ type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, dispo
 type SortKey = "price" | "duration" | "depart";
 type ViewMode = "week" | "month";
 
-type FlightRaw = any;
+type FlightRaw = unknown;
 type Flight = {
-  prix: number;
+  prix: number; // > 0 (après filtrage)
   compagnie?: string;
   escales?: number;
   um_ok?: boolean;
@@ -79,18 +80,16 @@ const firstDayOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
 const lastDayOfMonth = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth() + 1, 0);
 
-// format local YYYY-MM-DD (sans fuseau)
-const fmtDateLocal = (d: Date) => {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-};
-// parse "YYYY-MM-DD" en Date locale (00:00 locale)
+// YYYY-MM-DD (local, sans TZ)
+const fmtDateLocal = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const parseYMDLocal = (s?: string) => {
   if (!s) return undefined;
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return undefined;
-  const y = Number(m[1]);
-  const mm = Number(m[2]);
-  const dd = Number(m[3]);
+  const y = Number(m[1]),
+    mm = Number(m[2]),
+    dd = Number(m[3]);
   return new Date(y, mm - 1, dd, 0, 0, 0, 0);
 };
 
@@ -106,8 +105,12 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
-function normalizeFlight(r: FlightRaw): Flight {
-  const price = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
+/** Normalise un vol brut -> Flight (prix peut être NaN si invalide, filtré ensuite) */
+function normalizeFlight(r: any): Flight {
+  const rawPrice =
+    typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
+  const prix =
+    Number.isFinite(rawPrice) && rawPrice > 0 ? Math.round(rawPrice) : NaN;
 
   const depISO =
     r?.depart_iso ??
@@ -137,7 +140,7 @@ function normalizeFlight(r: FlightRaw): Flight {
       : undefined);
 
   return {
-    prix: Number.isFinite(price) ? Math.round(price) : 0,
+    prix, // peut être NaN ici → on filtrera
     compagnie,
     escales:
       typeof r?.escales === "number"
@@ -155,11 +158,11 @@ function normalizeFlight(r: FlightRaw): Flight {
   };
 }
 
-/* ---------------------------
-   Composant principal
---------------------------- */
+/* ============================================================
+   Composant principal (monolithique, stable)
+============================================================ */
 
-export default function SearchClient(): JSX.Element {
+export default function SearchClient() {
   const router = useRouter();
   const params = useSearchParams();
 
@@ -168,7 +171,8 @@ export default function SearchClient(): JSX.Element {
   const [destination, setDestination] = useState(
     params.get("destination") || "BCN"
   );
-  const initialDate = parseYMDLocal(params.get("date") || undefined) ?? new Date();
+  const initialDate =
+    parseYMDLocal(params.get("date") || undefined) ?? new Date();
   const [dateStr, setDateStr] = useState<string>(fmtDateLocal(initialDate));
   const [sort, setSort] = useState<SortKey>(
     (params.get("sort") as SortKey) || "price"
@@ -197,6 +201,11 @@ export default function SearchClient(): JSX.Element {
 
   // mois affiché
   const [monthCursor, setMonthCursor] = useState<Date>(() => initialDate);
+
+  // ⚑ Mémoire locale : min “pinné” par date (évite tout yo-yo et assure cohérence vignettes)
+  const pinnedMinByDateRef = useRef<Record<string, number>>({});
+  // petit “bump” pour forcer les re-render dépendants des prix pinnés
+  const [pinnedVersion, setPinnedVersion] = useState(0);
 
   // helper local : format YYYY-MM-DD en local
   const fmtDate = (d: Date): string => fmtDateLocal(d);
@@ -235,11 +244,12 @@ export default function SearchClient(): JSX.Element {
   // pousser l’URL (sans rechargement)
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const abs = new URL(currentShareURL, window.location.origin);
-    router.replace(abs as unknown as string); // RouteImpl<string> vs URL — cast sûr côté client
+    router.replace(currentShareURL as any);
   }, [router, currentShareURL]);
 
-  // fetch calendrier
+  /* ---------------------------
+     FETCH calendrier (avec sanitisation)
+  --------------------------- */
   const loadCalendar = useCallback(
     async (cursor: Date) => {
       setLoadingCal(true);
@@ -253,7 +263,26 @@ export default function SearchClient(): JSX.Element {
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("calendar upstream");
         const data = await r.json();
-        setCalendar(data.calendar || {});
+
+        const raw = (data?.calendar ?? {}) as Record<
+          string,
+          { prix?: unknown; disponible?: unknown }
+        >;
+
+        const sanitized: CalendarMap = {};
+        for (const [k, v] of Object.entries(raw)) {
+          const rawPrice =
+            typeof v?.prix === "number" ? v.prix : Number(v?.prix);
+          // ≤ 0 => null (case vide)
+          const prix =
+            Number.isFinite(rawPrice) && rawPrice > 0
+              ? Math.round(rawPrice)
+              : null;
+          const disponible = Boolean(v?.disponible);
+          sanitized[k] = { prix, disponible };
+        }
+
+        setCalendar(sanitized);
       } catch {
         setCalendar({});
       } finally {
@@ -263,7 +292,9 @@ export default function SearchClient(): JSX.Element {
     [origin, destination, direct, um, pets]
   );
 
-  // fetch résultats
+  /* ---------------------------
+     FETCH résultats (normalisation + pin min + re-render immédiat)
+  --------------------------- */
   const loadResults = useCallback(
     async (dStr: string) => {
       setLoadingRes(true);
@@ -276,9 +307,13 @@ export default function SearchClient(): JSX.Element {
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok) throw new Error("search upstream");
         const raw = await r.json();
+
         let list: Flight[] = Array.isArray(raw?.results)
           ? raw.results.map(normalizeFlight)
           : [];
+
+        // Élimine les vols sans prix valide (NaN) ou ≤ 0
+        list = list.filter((x) => Number.isFinite(x.prix) && x.prix > 0);
 
         // filtre direct si demandé (sécurité)
         if (direct) list = list.filter((x) => (x.escales ?? 0) === 0);
@@ -293,6 +328,18 @@ export default function SearchClient(): JSX.Element {
           const bd = parseISOorLocal(b.departISO)?.getTime() ?? 9e13;
           return ad - bd;
         });
+
+        // ⛳ pin du min de la journée sélectionnée (si liste non vide)
+        if (list.length) {
+          const dayMin = Math.min(...list.map((x) => x.prix));
+          if (!Number.isNaN(dayMin) && dayMin > 0) {
+            pinnedMinByDateRef.current[dStr] = dayMin;
+            // re-render immédiat des vues qui dépendent des prix pinnés
+            setPinnedVersion((v) => v + 1);
+            // et “ping” du calendrier pour invalider les useMemo qui ne dépendent que de calendar
+            setCalendar((prev) => ({ ...prev }));
+          }
+        }
 
         setResults(list);
       } catch {
@@ -313,33 +360,61 @@ export default function SearchClient(): JSX.Element {
     loadResults(dateStr);
   }, [loadResults, dateStr]);
 
-  // recalibrage sélection résultats (timeline/carte)
+  // sélection auto 1er résultat
   useEffect(() => {
     if (results.length === 0) setSelectedIndex(-1);
     else if (selectedIndex < 0 || selectedIndex >= results.length)
       setSelectedIndex(0);
   }, [results, selectedIndex]);
 
-  // patch calendrier avec min du jour sélectionné (pour cohérence couleur)
-  const patchedCalendar = useMemo(() => {
-    const copy: CalendarMap = { ...calendar };
-    const dayMin =
-      results.length > 0 ? Math.min(...results.map((r) => r.prix)) : null;
-    const key = dateStr;
-    if (copy[key]) copy[key] = { prix: dayMin, disponible: copy[key].disponible };
-    return copy;
-  }, [calendar, results, dateStr]);
+  /* ---------------------------
+     Calendrier affiché = union(pinned, calendar)
+     Pour chaque dateKey :
+       prix = pinned[dateKey] ?? calendar[dateKey]?.prix ?? null
+     (toutes les cases évaluées, pas uniquement la sélection)
+  --------------------------- */
+  const displayCalendar: CalendarMap = useMemo(() => {
+    const unionKeys = new Set<string>([
+      ...Object.keys(calendar),
+      ...Object.keys(pinnedMinByDateRef.current),
+    ]);
+
+    const out: CalendarMap = {};
+    for (const key of unionKeys) {
+      const base = calendar[key];
+      const hasPinned = Object.prototype.hasOwnProperty.call(
+        pinnedMinByDateRef.current,
+        key
+      );
+      const pinnedVal = hasPinned ? pinnedMinByDateRef.current[key] : undefined;
+
+      let prix: number | null = null;
+      if (typeof pinnedVal === "number" && pinnedVal > 0) {
+        prix = pinnedVal;
+      } else if (typeof base?.prix === "number") {
+        prix = base!.prix!;
+      } else {
+        prix = null;
+      }
+
+      const disponible = base?.disponible ?? (prix != null);
+      out[key] = { prix, disponible };
+    }
+    return out;
+  }, [calendar, pinnedVersion]); // ← dépend explicitement des pins
 
   const calStats = useMemo(() => {
-    const values = Object.values(patchedCalendar)
+    const values = Object.values(displayCalendar)
       .map((d) => d.prix)
       .filter((x): x is number => typeof x === "number");
     const min = values.length ? Math.min(...values) : 0;
     const max = values.length ? Math.max(...values) : 0;
     return { min, max };
-  }, [patchedCalendar]);
+  }, [displayCalendar]);
 
-  // navigation mois
+  /* ---------------------------
+     Navigation + sélection jour
+  --------------------------- */
   const goPrevMonth = () => {
     const d = new Date(monthCursor);
     d.setMonth(d.getMonth() - 1, 1);
@@ -353,7 +428,6 @@ export default function SearchClient(): JSX.Element {
     loadCalendar(d);
   };
 
-  // sélection d’un jour
   const selectDay = (d: Date) => {
     const s = fmtDate(d);
     setDateStr(s);
@@ -394,27 +468,20 @@ export default function SearchClient(): JSX.Element {
         : "";
     const url = `${base}${currentShareURL}`;
     try {
-      if (
-        typeof navigator !== "undefined" &&
-        "share" in navigator &&
-        // @ts-expect-error — API Web Share non typée partout
-        typeof navigator.share === "function"
-      ) {
-        // @ts-expect-error — API Web Share non typée partout
-        await navigator.share({
+      const nav: any =
+        (typeof navigator !== "undefined" ? navigator : {}) as any;
+      if (nav?.share && typeof nav.share === "function") {
+        await nav.share({
           title: "Comparateur — vols",
           text: "Résultats de recherche",
           url,
         });
+      } else if (nav?.clipboard?.writeText) {
+        await nav.clipboard.writeText(url);
+        alert("Lien copié dans le presse-papiers !");
       } else {
-        const nav: any = navigator as any;
-        if (nav?.clipboard?.writeText) {
-          await nav.clipboard.writeText(url);
-          alert("Lien copié dans le presse-papiers !");
-        } else {
-          window.history.replaceState(null, "", currentShareURL);
-          alert("Lien prêt dans la barre d’adresse (copie manuelle).");
-        }
+        window.history.replaceState(null, "", currentShareURL);
+        alert("Lien prêt dans la barre d’adresse (copie manuelle).");
       }
     } catch {
       window.history.replaceState(null, "", currentShareURL);
@@ -423,10 +490,9 @@ export default function SearchClient(): JSX.Element {
   };
 
   /* ---------------------------
-     RENDUS
+     UI
   --------------------------- */
 
-  // helper local : format "YYYY-MM-DD" en heure locale (utilisé dans DayTile)
   const fmtDate_compat = (d: Date): string => fmtDateLocal(d);
 
   const PriceBadge: React.FC<{ value: number | null }> = ({ value }) => {
@@ -448,7 +514,7 @@ export default function SearchClient(): JSX.Element {
 
   const DayTile: React.FC<{ d: Date; compact?: boolean }> = ({ d, compact }) => {
     const key = fmtDate_compat(d);
-    const info = patchedCalendar[key];
+    const info = displayCalendar[key]; // ← calendrier affiché (stable & union)
     const selected = key === dateStr;
     return (
       <button
@@ -456,9 +522,7 @@ export default function SearchClient(): JSX.Element {
         title={key}
         className={[
           "rounded border transition hover:shadow",
-          // hauteur uniforme (mobile > desktop)
           "h-[72px] sm:h-[84px] md:h-[96px]",
-          // contenu : numéro en haut gauche + badge centré
           "flex flex-col justify-between",
           "px-2 py-2",
           selected ? "ring-2 ring-blue-400" : "",
@@ -490,15 +554,11 @@ export default function SearchClient(): JSX.Element {
   const MonthView = () => (
     <div className="mt-4">
       <div className="mb-3 flex items-center gap-2">
-        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">
-          ◀
-        </button>
+        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
         <div className="min-w-[180px] text-center font-medium">
           {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
         </div>
-        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">
-          ▶
-        </button>
+        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
       </div>
       <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
         {frenchWeekLabels.map((w, i) => (
@@ -555,10 +615,9 @@ export default function SearchClient(): JSX.Element {
                 title={fmtDate_compat(d)}
               >
                 <div className="text-[11px]">{d.getDate()}</div>
-                {/* pastille couleur (pas de prix) */}
                 {(() => {
                   const tone = classifyPrice(
-                    patchedCalendar[fmtDate_compat(d)]?.prix ?? null,
+                    displayCalendar[fmtDate_compat(d)]?.prix ?? null,
                     calStats.min,
                     calStats.max
                   );
@@ -587,7 +646,6 @@ export default function SearchClient(): JSX.Element {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
-  /* Timeline cliquable */
   const Timeline: React.FC = () => {
     const start = parseYMDLocal(dateStr) ?? new Date();
     const dayStart = new Date(
@@ -690,15 +748,21 @@ export default function SearchClient(): JSX.Element {
               }}
             >
               <div className="flex items-center justify-between">
-                <div className="text-lg font-semibold">{Math.round(r.prix)} €</div>
-                <div className="text-sm text-gray-600">{r.compagnie || "—"}</div>
+                <div className="text-lg font-semibold">
+                  {Math.round(r.prix)} €
+                </div>
+                <div className="text-sm text-gray-600">
+                  {r.compagnie || "—"}
+                </div>
               </div>
               <div className="mt-1 text-sm text-gray-700">
                 {r.departText} → {r.arriveeText} ·{" "}
                 {r.dureeMin
                   ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min`
                   : "—"}{" "}
-                · {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
+                · {typeof r.escales === "number"
+                  ? `${r.escales} escale(s)`
+                  : "—"}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full border px-2 py-0.5">
@@ -713,10 +777,6 @@ export default function SearchClient(): JSX.Element {
       )}
     </div>
   );
-
-  /* ---------------------------
-     Rendu principal
-  --------------------------- */
 
   return (
     <main className="mx-auto max-w-5xl p-4">
@@ -784,15 +844,27 @@ export default function SearchClient(): JSX.Element {
         <div className="flex items-end justify-between gap-2 md:col-span-1">
           <div className="flex flex-col gap-1 text-sm">
             <label className="flex items-center gap-2">
-              <input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={direct}
+                onChange={(e) => setDirect(e.target.checked)}
+              />
               Direct
             </label>
             <label className="flex items-center gap-2">
-              <input type="checkbox" checked={um} onChange={(e) => setUm(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={um}
+                onChange={(e) => setUm(e.target.checked)}
+              />
               UM
             </label>
             <label className="flex items-center gap-2">
-              <input type="checkbox" checked={pets} onChange={(e) => setPets(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={pets}
+                onChange={(e) => setPets(e.target.checked)}
+              />
               Animaux
             </label>
           </div>

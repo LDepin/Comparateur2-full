@@ -43,3 +43,4 @@ class SearchRequest(BaseModel):
     sort: Literal["price","duration"] = "price"
     direct: bool = False
     view: Literal["month","week","day"] = "month"
+    
