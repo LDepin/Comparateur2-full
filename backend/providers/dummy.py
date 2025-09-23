@@ -142,3 +142,15 @@ def get_day_flights(origin: str, destination: str, date: str, criteria: Dict[str
         })
 
     return out
+
+
+# ==== Classe attendue par le loader ====
+
+class DummyProvider:
+    """
+    Fin adaptateur OO pour coller à l’interface du loader.
+    """
+    name = "dummy"
+
+    def get_day_flights(self, origin: str, destination: str, date: str, criteria: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return get_day_flights(origin, destination, date, criteria)

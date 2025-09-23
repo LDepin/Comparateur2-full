@@ -1,46 +1,55 @@
 # backend/app/routers/calendar.py
 from __future__ import annotations
-from fastapi import APIRouter, Query
-from typing import Dict, Any, Optional
-import os
+
+from fastapi import APIRouter, Query, HTTPException
+from typing import Dict, Any
+from datetime import date as dt_date
 
 from ..services.normalize import normalize_criteria
 from ..services.calendar_aggregator import build_month
 
-# Sélection du provider via l'ENV (compat simple)
-PROVIDER_NAME = os.getenv("PROVIDERS", "dummy").strip().lower()
-if PROVIDER_NAME == "dummy":
-    # NOTE: providers est un paquet voisin de app/
-    from providers import dummy as provider
-else:
-    raise NotImplementedError(f"Provider inconnu: {PROVIDER_NAME}")
+router = APIRouter(prefix="", tags=["calendar"])  # pas de /api (proxy Next attend /calendar)
 
-router = APIRouter(prefix="", tags=["calendar"])  # pas de /api pour matcher le front
+def _valid_month(month: str) -> bool:
+    return (
+        len(month) == 7
+        and month[4] == "-"
+        and month[:4].isdigit()
+        and month[5:7].isdigit()
+    )
 
 @router.get("/calendar")
 def get_calendar(
-    origin: str = Query(..., min_length=3),
-    destination: str = Query(..., min_length=3),
+    # obligatoires
+    origin: str = Query(..., min_length=3, max_length=3),
+    destination: str = Query(..., min_length=3, max_length=3),
     month: str = Query(..., description="YYYY-MM"),
-    # critères optionnels — pass-through
-    adults: Optional[int] = 1,
-    childrenAges: Optional[str] = None,
-    infants: Optional[int] = 0,
-    um: Optional[int] = 0,
-    umAges: Optional[str] = None,
-    pets: Optional[int] = 0,
-    bagsSoute: Optional[int] = 0,
-    bagsCabin: Optional[int] = 0,
-    cabin: Optional[str] = "eco",
-    direct: Optional[int] = 0,
-    fareType: Optional[str] = None,
-    resident: Optional[int] = 0,
+    # critères optionnels – pass-through vers normalize_criteria()
+    adults: int | None = Query(None, ge=0),
+    childrenAges: str | None = Query(None, description="CSV ages enfants (ex: 5,9)"),
+    infants: int | None = Query(None, ge=0),
+    um: int | None = Query(None),                 # 0/1
+    umAges: str | None = Query(None),             # CSV ages UM
+    pets: int | None = Query(None),               # 0/1
+    bagsSoute: int | None = Query(None, ge=0),
+    bagsCabin: int | None = Query(None, ge=0),
+    cabin: str | None = Query(None),              # eco|premium|business|first
+    direct: int | None = Query(None),             # 0/1
+    fareType: str | None = Query(None),
+    resident: int | None = Query(None),           # 0/1
 ):
     """
-    Renvoie { "calendar": { "YYYY-MM-DD": { "prix": int|null, "disponible": bool }, ... } }
-    Le calcul du mois est réalisé en itérant sur *chaque jour* (cache jour utilisé sous le capot).
+    Renvoie un calendrier *cohérent jour ↔ jour* :
+      { "calendar": { "YYYY-MM-DD": { "prix": int|None, "disponible": bool }, ... } }
+
+    - Source de vérité = agrégation *jour par jour* via les providers actifs (Amadeus en priorité, sinon dummy).
+    - Prix invalides (<=0/NaN) exclus.
+    - Le min de /calendar pour un jour correspondra au 1er résultat de /search le même jour (grâce au cache DAY:/CAL: côté services).
     """
-    # Normalisation homogène des critères (clé de cache stable + pricing identique à /search)
+    if not _valid_month(month):
+        raise HTTPException(status_code=400, detail="Paramètre month invalide, attendu YYYY-MM.")
+
+    # Normalise TOUTES les options en un dict de critères stable (utilisé dans la clé de cache)
     criteria: Dict[str, Any] = normalize_criteria({
         "adults": adults,
         "childrenAges": childrenAges,
@@ -56,8 +65,7 @@ def get_calendar(
         "resident": resident,
     })
 
-    if len(month) != 7 or month[4] != "-" or not month.replace("-", "").isdigit():
-        return {"calendar": {}}
+    # Agrégation *jour par jour* (utilise le cache DAY: en interne, puis compose CAL:)
+    calendar = build_month(origin=origin, destination=destination, month_ym=month, criteria=criteria)
 
-    cal = build_month(origin.upper(), destination.upper(), month, criteria, provider)
-    return {"calendar": cal}
+    return {"calendar": calendar}

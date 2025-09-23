@@ -1,148 +1,119 @@
 # backend/app/services/providers.py
 from __future__ import annotations
 
-import math
 import os
-from typing import Any, Dict, List, Optional, Tuple
-
+import logging
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 Criteria = Dict[str, Any]
+logger = logging.getLogger(__name__)
 
-# ---------- Interface attendue par l’agrégateur ----------
 
-class Provider:
+@runtime_checkable
+class Provider(Protocol):
     """
-    Interface adapter générique sur une source de vols.
+    Interface minimale attendue par l'agrégateur.
+    Chaque provider doit implémenter get_day_flights().
     """
+    name: str
 
-    name: str = "provider"
+    def get_day_flights(
+        self,
+        origin: str,
+        destination: str,
+        date_ymd: str,
+        criteria: Criteria,
+    ) -> List[Dict[str, Any]]:
+        ...
 
-    def get_month_mins(
-        self, origin: str, destination: str, year: int, month_1to12: int, criteria: Criteria
-    ) -> Optional[Dict[str, Optional[int]]]:
-        """
-        Optionnel. Renvoie un dict { 'YYYY-MM-DD': minPrix|None }.
-        Retourne None si l’API n'expose pas de "mois".
-        """
+
+# --------- Chargement dynamique des providers ---------
+
+def _load_provider(name: str) -> Optional[Provider]:
+    n = name.strip().lower()
+    try:
+        if n == "amadeus":
+            # On ne bloque pas si les creds ne sont pas fournis : on log et on laisse le fallback.
+            client_id = os.getenv("AMADEUS_CLIENT_ID") or os.getenv("AMADEUS_API_KEY")
+            client_secret = os.getenv("AMADEUS_CLIENT_SECRET") or os.getenv("AMADEUS_API_SECRET")
+            if not client_id or not client_secret:
+                logger.warning("providers: 'amadeus' demandé mais AMADEUS_* manquants → skip")
+                return None
+            from providers.amadeus import AmadeusProvider  # type: ignore
+            return AmadeusProvider()
+        if n == "dummy":
+            from providers.dummy import DummyProvider  # type: ignore
+            return DummyProvider()
+
+        logger.warning("providers: nom inconnu '%s' → ignoré", name)
+        return None
+    except Exception as e:  # pragma: no cover
+        logger.warning("providers: échec chargement '%s': %s", name, e)
         return None
 
-    def get_day_flights(
-        self, origin: str, destination: str, date_ymd: str, criteria: Criteria
-    ) -> List[Dict[str, Any]]:
-        """
-        Obligatoire. Liste des vols du jour (déjà pricés selon critères).
-        """
-        raise NotImplementedError
 
+# Singleton d'instances chargées (rempli à la 1ère utilisation)
+_PROVIDERS: Optional[List[Provider]] = None
 
-# ---------- DummyProvider déterministe (pour dev/local) ----------
-
-def _pad2(n: int) -> str:
-    return f"{n:02d}"
-
-def _seed_month(origin: str, destination: str, y: int, m: int, criteria: Criteria) -> int:
-    flags = (
-        (1 if criteria.get("direct") else 0) * 101
-        + (1 if criteria.get("um") else 0) * 73
-        + (1 if criteria.get("pets") else 0) * 59
-        + (1 if (criteria.get("cabin") or "eco") == "business" else 0) * 17
-    )
-    return y * 10000 + m * 100 + ord(origin[:1].upper()) * 13 + ord(destination[:1].upper()) * 17 + flags
-
-def _seed_day(date_ymd: str, origin: str, destination: str, criteria: Criteria) -> int:
-    ymd = int(date_ymd.replace("-", ""))
-    return ymd + ord(origin[:1].upper()) * 13 + ord(destination[:1].upper()) * 19 + (
-        (1 if criteria.get("direct") else 0) * 101
-        + (1 if criteria.get("um") else 0) * 73
-        + (1 if criteria.get("pets") else 0) * 59
-    )
-
-def _rnd(seed: int, i: int) -> float:
-    x = math.sin(seed + i * 37) * 10000.0
-    return x - int(x)
-
-
-class DummyProvider(Provider):
-    name = "dummy"
-
-    def get_month_mins(
-        self, origin: str, destination: str, year: int, month_1to12: int, criteria: Criteria
-    ) -> Optional[Dict[str, Optional[int]]]:
-        seed = _seed_month(origin, destination, year, month_1to12, criteria)
-        # NB: on ne met pas de "random" non déterministe ; c’est stable pour un jeu de critères donné
-        from datetime import date
-
-        # nb jours du mois
-        if month_1to12 == 12:
-            nb = (date(year + 1, 1, 1) - date(year, month_1to12, 1)).days
-        else:
-            nb = (date(year, month_1to12 + 1, 1) - date(year, month_1to12, 1)).days
-
-        out: Dict[str, Optional[int]] = {}
-        for d in range(1, nb + 1):
-            r = _rnd(seed, d)
-            available = r > 0.15  # ~85% des jours ont au moins un vol
-            price = None
-            if available:
-                base = 40 + int(_rnd(seed, d + 1) * 200)  # 40..240
-                if criteria.get("direct"):
-                    base += 8
-                if criteria.get("um"):
-                    base += 5
-                if criteria.get("pets"):
-                    base += 5
-                price = max(1, base)
-            key = f"{year}-{_pad2(month_1to12)}-{_pad2(d)}"
-            out[key] = price
-        return out
-
-    def get_day_flights(
-        self, origin: str, destination: str, date_ymd: str, criteria: Criteria
-    ) -> List[Dict[str, Any]]:
-        seed = _seed_day(date_ymd, origin, destination, criteria)
-        company_pool = ["AF", "VY", "U2", "IB", "TO", "HV", "V7"]
-
-        count = 6 + int(_rnd(seed, 1) * 6)  # 6..11 vols
-        flights: List[Dict[str, Any]] = []
-        for i in range(count):
-            base = 40 + int(_rnd(seed, 10 + i) * 200)
-            prix = base + (8 if criteria.get("direct") else 0) + (5 if criteria.get("um") else 0) + (5 if criteria.get("pets") else 0)
-            escales = 0 if criteria.get("direct") else (0 if _rnd(seed, 20 + i) < 0.6 else 1)
-
-            hour = 6 + int(_rnd(seed, 30 + i) * 14)        # 06..20
-            minute = int(_rnd(seed, 40 + i) * 60)
-            duree_min = 60 + int(_rnd(seed, 50 + i) * 240) # 1h..5h
-
-            arr_h = (hour + (duree_min // 60)) % 24
-            arr_m = (minute + (duree_min % 60)) % 60
-
-            compagnie = company_pool[int(_rnd(seed, 60 + i) * len(company_pool))]
-            flights.append({
-                "prix": prix,
-                "compagnie": compagnie,
-                "escales": escales,
-                "um_ok": True,
-                "animal_ok": True,
-                "departISO": f"{date_ymd}T{_pad2(hour)}:{_pad2(minute)}:00.000Z",
-                "arriveeISO": f"{date_ymd}T{_pad2(arr_h)}:{_pad2(arr_m)}:00.000Z",
-                "duree": f"PT{duree_min // 60}H{duree_min % 60}M",
-                "duree_minutes": duree_min,
-            })
-        return flights
-
-
-# ---------- Référencement/instanciation des providers ----------
 
 def build_providers() -> List[Provider]:
     """
-    Lecture de la variable d'env PROVIDERS (CSV), ex: "dummy".
-    En prod, tu pourras brancher des adapters réels ici.
+    Lit PROVIDERS (CSV, ex: 'amadeus,dummy') et renvoie la liste d'instances.
+    Garantit qu'il y a au moins un provider (fallback dummy).
     """
-    names = [s.strip().lower() for s in os.getenv("PROVIDERS", "dummy").split(",") if s.strip()]
+    global _PROVIDERS
+    if _PROVIDERS is not None:
+        return _PROVIDERS
+
+    wanted = os.getenv("PROVIDERS", "dummy")
+    names = [s.strip() for s in wanted.split(",") if s.strip()]
     out: List[Provider] = []
+
     for n in names:
-        if n == "dummy":
-            out.append(DummyProvider())
-        # elif n == "navitia": out.append(NavitiaProvider(...))
-        # elif n == "ptx_tw": out.append(PTXTaiwanProvider(...))
-    return out
+        p = _load_provider(n)
+        if p:
+            out.append(p)
+
+    if not out:
+        # Fallback de sécurité
+        from providers.dummy import DummyProvider  # type: ignore
+        out = [DummyProvider()]
+        logger.info("providers: fallback sur dummy (aucun provider valide chargé)")
+
+    _PROVIDERS = out
+    logger.info("providers: chargés = %s", ",".join(getattr(p, "name", "unknown") for p in _PROVIDERS))
+    return _PROVIDERS
+
+
+# --------- Helper d’agrégation (priorité au 1er provider qui renvoie des vols) ---------
+
+def get_day_flights(
+    origin: str,
+    destination: str,
+    date_ymd: str,
+    criteria: Criteria,
+) -> List[Dict[str, Any]]:
+    """
+    Tente chaque provider dans l'ordre déclaré (ex: amadeus puis dummy).
+    Renvoie la 1ère liste non vide ; sinon la dernière (souvent vide).
+    """
+    flights: List[Dict[str, Any]] = []
+    for idx, provider in enumerate(build_providers()):
+        try:
+            cand = provider.get_day_flights(origin, destination, date_ymd, criteria)
+            if cand:
+                logger.info(
+                    "providers: %s → %d vols (min=%s)",
+                    provider.name,
+                    len(cand),
+                    min((f.get("prix") for f in cand if isinstance(f.get("prix"), (int, float))), default="n/a"),
+                )
+                return cand
+            else:
+                logger.info("providers: %s → 0 vol", provider.name)
+                flights = cand  # garde la dernière valeur (vide)
+        except Exception as e:  # pragma: no cover
+            logger.warning("providers: erreur %s: %s", provider.name, e)
+            # on continue vers le provider suivant
+
+    return flights
