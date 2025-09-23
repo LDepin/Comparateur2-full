@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, HTTPException
 from typing import Dict, Any
-from datetime import date as dt_date
 
 from ..services.normalize import normalize_criteria
 from ..services.calendar_aggregator import build_month
 
 router = APIRouter(prefix="", tags=["calendar"])  # pas de /api (proxy Next attend /calendar)
+
 
 def _valid_month(month: str) -> bool:
     return (
@@ -17,6 +17,7 @@ def _valid_month(month: str) -> bool:
         and month[:4].isdigit()
         and month[5:7].isdigit()
     )
+
 
 @router.get("/calendar")
 def get_calendar(
@@ -49,7 +50,6 @@ def get_calendar(
     if not _valid_month(month):
         raise HTTPException(status_code=400, detail="Paramètre month invalide, attendu YYYY-MM.")
 
-    # Normalise TOUTES les options en un dict de critères stable (utilisé dans la clé de cache)
     criteria: Dict[str, Any] = normalize_criteria({
         "adults": adults,
         "childrenAges": childrenAges,
@@ -65,7 +65,7 @@ def get_calendar(
         "resident": resident,
     })
 
-    # Agrégation *jour par jour* (utilise le cache DAY: en interne, puis compose CAL:)
+    # Agrégation *jour par jour* (utilise le cache DAY en interne, puis compose CAL)
     calendar = build_month(origin=origin, destination=destination, month_ym=month, criteria=criteria)
 
     return {"calendar": calendar}
