@@ -13,13 +13,16 @@ log = logging.getLogger(__name__)
 # Instanciation (ordre: amadeus puis dummy si configuré ainsi)
 _PROVIDERS = build_providers()
 
+
 def _days_in_month(year: int, month_1to12: int) -> int:
     if month_1to12 == 12:
         return (dt_date(year + 1, 1, 1) - dt_date(year, month_1to12, 1)).days
     return (dt_date(year, month_1to12 + 1, 1) - dt_date(year, month_1to12, 1)).days
 
+
 def _pad2(n: int) -> str:
     return f"{n:02d}"
+
 
 def _first_non_empty_day_flights(origin: str, destination: str, date_ymd: str, criteria: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -54,17 +57,32 @@ def _first_non_empty_day_flights(origin: str, destination: str, date_ymd: str, c
     results.sort(key=lambda x: x.get("prix", 10**9))
     return results
 
+
 def build_month(
     origin: str,
     destination: str,
-    month_ym: str,  # YYYY-MM
-    criteria: Dict[str, Any],
+    month_ym: Optional[str] = None,  # YYYY-MM
+    criteria: Optional[Dict[str, Any]] = None,
+    **compat_kwargs: Any,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Construit le calendrier en *itérant sur chaque jour* et en prenant le min issu du provider jour.
     Utilise le cache jour pour éviter la tempête. Aucune valeur synthétique.
     Le contenu mis en cache pour chaque jour est la liste normalisée triée (cohérence /search).
+
+    Compat:
+      - accepte month_ym="<YYYY-MM>" (nouveau)
+      - accepte month="<YYYY-MM>" (ancien appel) via **compat_kwargs
     """
+    if month_ym is None:
+        # compat ancienne signature: month=...
+        month_ym = compat_kwargs.get("month")
+    if not isinstance(month_ym, str) or len(month_ym) != 7 or month_ym[4] != "-":
+        raise ValueError("build_month: paramètre 'month_ym' invalide (attendu 'YYYY-MM').")
+
+    if criteria is None:
+        criteria = {}
+
     yy = int(month_ym[:4])
     mm = int(month_ym[5:7])
     nb = _days_in_month(yy, mm)
@@ -92,6 +110,7 @@ def build_month(
     ckey = cal_key(origin, destination, month_ym, criteria)
     cache.set(ckey, out, CACHE_TTL_CALENDAR)
     return out
+
 
 def update_month_cache_min_if_present(
     origin: str,
