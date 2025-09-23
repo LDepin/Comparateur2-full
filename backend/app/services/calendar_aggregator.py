@@ -6,55 +6,64 @@ import logging
 
 from .cache import cache, day_key, cal_key, CACHE_TTL_DAY, CACHE_TTL_CALENDAR
 from .normalize import sanitize_price, normalize_flight
-from .providers import build_providers  # charge selon PROVIDERS=...
+from .providers import build_providers  # même logique que /search
 
 log = logging.getLogger(__name__)
 
+# Instanciation (ordre: amadeus puis dummy si configuré ainsi)
+_PROVIDERS = build_providers()
 
 def _days_in_month(year: int, month_1to12: int) -> int:
     if month_1to12 == 12:
         return (dt_date(year + 1, 1, 1) - dt_date(year, month_1to12, 1)).days
     return (dt_date(year, month_1to12 + 1, 1) - dt_date(year, month_1to12, 1)).days
 
-
 def _pad2(n: int) -> str:
     return f"{n:02d}"
 
-
-def _get_day_flights_with_fallback(
-    origin: str,
-    destination: str,
-    date_ymd: str,
-    criteria: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+def _first_non_empty_day_flights(origin: str, destination: str, date_ymd: str, criteria: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Essaie les providers dans l'ordre défini par PROVIDERS.
-    Tolérance d'erreurs : on log et on continue. Retour [] si rien.
+    Essaie les providers dans l'ordre jusqu'à obtenir une liste non vide, puis normalise/filtre.
+    Résultat trié par prix croissant.
     """
-    providers = build_providers()
-    for p in providers:
+    raw: List[Dict[str, Any]] = []
+    for p in _PROVIDERS:
         try:
-            rows = p.get_day_flights(origin, destination, date_ymd, criteria) or []
-            if rows:
-                log.info("calendar: provider=%s day=%s %s-%s → %d offres", p.name, date_ymd, origin, destination, len(rows))
-                return rows
-            else:
-                log.info("calendar: provider=%s day=%s %s-%s → 0 offre", p.name, date_ymd, origin, destination)
+            got = p.get_day_flights(origin, destination, date_ymd, criteria)  # type: ignore[attr-defined]
         except Exception as e:
-            log.warning("calendar: provider=%s exception day=%s %s-%s → %s", p.name, date_ymd, origin, destination, e)
-            continue
-    return []
+            log.warning("Provider %s a échoué (calendar): %s", getattr(p, "name", "?"), e)
+            got = []
+        if got:
+            raw = got
+            break
 
+    if not raw:
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for r in raw:
+        f = normalize_flight(r, criteria)
+        if f is None:
+            continue
+        prix_ok = sanitize_price(f.get("prix"))
+        if prix_ok is None:
+            continue
+        f["prix"] = prix_ok
+        results.append(f)
+
+    results.sort(key=lambda x: x.get("prix", 10**9))
+    return results
 
 def build_month(
     origin: str,
     destination: str,
-    month_ym: str,  # YYYY-MM  (conforme à l'appelant)
+    month_ym: str,  # YYYY-MM
     criteria: Dict[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Construit le calendrier en *itérant sur chaque jour* et en prenant le min des vols du jour
-    (providers dans l'ordre, avec fallback). Utilise le cache DAY et compose le cache CAL.
+    Construit le calendrier en *itérant sur chaque jour* et en prenant le min issu du provider jour.
+    Utilise le cache jour pour éviter la tempête. Aucune valeur synthétique.
+    Le contenu mis en cache pour chaque jour est la liste normalisée triée (cohérence /search).
     """
     yy = int(month_ym[:4])
     mm = int(month_ym[5:7])
@@ -68,12 +77,8 @@ def build_month(
 
         flights: Optional[List[Dict[str, Any]]] = cache.get(dkey)
         if flights is None:
-            # Fetch + normalisation + filtrage prix valides
-            raw_list = _get_day_flights_with_fallback(origin, destination, date_key, criteria)
-            normalized = [normalize_flight(r, criteria) for r in raw_list]
-            normalized = [f for f in normalized if sanitize_price(f.get("prix")) is not None]
-            cache.set(dkey, normalized, CACHE_TTL_DAY)
-            flights = normalized
+            flights = _first_non_empty_day_flights(origin, destination, date_key, criteria)
+            cache.set(dkey, flights, CACHE_TTL_DAY)
 
         prices = [sanitize_price(f.get("prix")) for f in flights]
         prices = [p for p in prices if p is not None]
@@ -87,7 +92,6 @@ def build_month(
     ckey = cal_key(origin, destination, month_ym, criteria)
     cache.set(ckey, out, CACHE_TTL_CALENDAR)
     return out
-
 
 def update_month_cache_min_if_present(
     origin: str,

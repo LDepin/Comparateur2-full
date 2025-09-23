@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # ---------- Criteria ----------
 
@@ -111,31 +111,42 @@ def sanitize_price(p: Any) -> Optional[int]:
         return None
 
 
+def _parse_iso8601_duration_to_minutes(dur: Any) -> Optional[int]:
+    """Parse 'PTxHyM' -> minutes."""
+    if not isinstance(dur, str) or not dur.startswith("PT"):
+        return None
+    total = 0
+    num = ""
+    seen = False
+    for ch in dur[2:]:
+        if ch.isdigit():
+            num += ch
+            continue
+        if ch == "H" and num:
+            total += int(num) * 60
+            num = ""
+            seen = True
+        elif ch == "M" and num:
+            total += int(num)
+            num = ""
+            seen = True
+        else:
+            num = ""
+    return total if seen else None
+
+
 def normalize_flight(raw: Dict[str, Any], criteria: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Adapte un vol “brut” (dummy ou provider réel) vers la forme attendue par le front.
-    Champs attendus à l’entrée (FlightRaw) :
-      - price_total: float       (ou 'prix' déjà numérique)
-      - carrier: str|None
-      - nb_stops: int|None
-      - dep_iso: str (ISO)
-      - arr_iso: str (ISO)
-      - duration_minutes: int|None
+    Accepte les 2 formats suivants en entrée :
 
-    Retour attendu:
-      {
-        "prix": int,
-        "compagnie": str|None,
-        "escales": int|None,
-        "um_ok": bool,
-        "animal_ok": bool,
-        "departISO": str|None,
-        "arriveeISO": str|None,
-        "duree": "PTxHyM" (optionnel),
-        "duree_minutes": int (optionnel)
-      }
+    - Format "provider réel" (ex. Amadeus):
+        price_total, carrier, nb_stops, dep_iso, arr_iso, duration_minutes
+
+    - Format "dummy" existant:
+        prix, compagnie, escales, departISO, arriveeISO, duree|duree_minutes
     """
-    # Récup prix
+    # Prix
     price = None
     if "price_total" in raw:
         price = sanitize_price(raw.get("price_total"))
@@ -144,9 +155,29 @@ def normalize_flight(raw: Dict[str, Any], criteria: Dict[str, Any]) -> Optional[
     if price is None:
         return None
 
-    dep_iso = raw.get("dep_iso")
-    arr_iso = raw.get("arr_iso")
+    # Compagnie / escales
+    compagnie = raw.get("carrier")
+    if not compagnie:
+        compagnie = raw.get("compagnie")
+
+    escales = raw.get("nb_stops")
+    if escales is None:
+        escales = raw.get("escales")
+
+    # ISO départ/arrivée
+    dep_iso = raw.get("dep_iso") or raw.get("departISO")
+    arr_iso = raw.get("arr_iso") or raw.get("arriveeISO")
+
+    # Durée minutes
     duration_min = raw.get("duration_minutes")
+    if duration_min is None:
+        if "duree_minutes" in raw:
+            try:
+                duration_min = int(raw.get("duree_minutes"))
+            except Exception:
+                duration_min = None
+        elif "duree" in raw:
+            duration_min = _parse_iso8601_duration_to_minutes(raw.get("duree"))
 
     # reconstituer une ISO 8601 “PTxHyM” si minutes fournies
     iso_dur = None
@@ -154,14 +185,22 @@ def normalize_flight(raw: Dict[str, Any], criteria: Dict[str, Any]) -> Optional[
         h, m = divmod(int(duration_min), 60)
         iso_dur = f"PT{h}H{m}M"
 
+    # Flags (on les transmet si présents, sinon True par défaut pour rester non-bloquant)
+    um_ok = raw.get("um_ok")
+    if um_ok is None:
+        um_ok = True
+    animal_ok = raw.get("animal_ok")
+    if animal_ok is None:
+        animal_ok = True
+
     return {
         "prix": price,
-        "compagnie": raw.get("carrier"),
-        "escales": raw.get("nb_stops"),
-        "um_ok": True if int(criteria.get("um", 0)) == 1 else True,         # pour l’instant on laisse à True
-        "animal_ok": True if int(criteria.get("pets", 0)) == 1 else True,   # idem
+        "compagnie": compagnie,
+        "escales": escales,
+        "um_ok": bool(um_ok),
+        "animal_ok": bool(animal_ok),
         "departISO": dep_iso,
         "arriveeISO": arr_iso,
-        "duree": iso_dur,                    # laissé optionnel
-        "duree_minutes": duration_min,       # laissé optionnel
+        "duree": iso_dur,              # optionnel
+        "duree_minutes": duration_min, # optionnel
     }
