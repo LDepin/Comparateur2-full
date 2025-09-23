@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------- Criteria ----------
 
@@ -111,40 +111,36 @@ def sanitize_price(p: Any) -> Optional[int]:
         return None
 
 
-def _parse_iso8601_duration_to_minutes(dur: Any) -> Optional[int]:
-    """Parse 'PTxHyM' -> minutes."""
-    if not isinstance(dur, str) or not dur.startswith("PT"):
-        return None
-    total = 0
-    num = ""
-    seen = False
-    for ch in dur[2:]:
-        if ch.isdigit():
-            num += ch
-            continue
-        if ch == "H" and num:
-            total += int(num) * 60
-            num = ""
-            seen = True
-        elif ch == "M" and num:
-            total += int(num)
-            num = ""
-            seen = True
-        else:
-            num = ""
-    return total if seen else None
+def _first_not_none(*vals: Any) -> Any:
+    for v in vals:
+        if v is not None:
+            return v
+    return None
 
 
 def normalize_flight(raw: Dict[str, Any], criteria: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Adapte un vol “brut” (dummy ou provider réel) vers la forme attendue par le front.
-    Accepte les 2 formats suivants en entrée :
+    Champs acceptés en entrée (compat amadeus + dummy) :
+      - price_total | prix
+      - carrier | compagnie
+      - nb_stops | escales
+      - dep_iso | departISO
+      - arr_iso | arriveeISO
+      - duration_minutes | duree_minutes
 
-    - Format "provider réel" (ex. Amadeus):
-        price_total, carrier, nb_stops, dep_iso, arr_iso, duration_minutes
-
-    - Format "dummy" existant:
-        prix, compagnie, escales, departISO, arriveeISO, duree|duree_minutes
+    Retour:
+      {
+        "prix": int,
+        "compagnie": str|None,
+        "escales": int|None,
+        "um_ok": bool,
+        "animal_ok": bool,
+        "departISO": str|None,
+        "arriveeISO": str|None,
+        "duree": "PTxHyM" (optionnel),
+        "duree_minutes": int (optionnel)
+      }
     """
     # Prix
     price = None
@@ -155,52 +151,31 @@ def normalize_flight(raw: Dict[str, Any], criteria: Dict[str, Any]) -> Optional[
     if price is None:
         return None
 
-    # Compagnie / escales
-    compagnie = raw.get("carrier")
-    if not compagnie:
-        compagnie = raw.get("compagnie")
+    # Champs avec tolérance de noms (amadeus vs dummy)
+    carrier = _first_not_none(raw.get("carrier"), raw.get("compagnie"))
+    nb_stops = _first_not_none(raw.get("nb_stops"), raw.get("escales"))
+    dep_iso = _first_not_none(raw.get("dep_iso"), raw.get("departISO"))
+    arr_iso = _first_not_none(raw.get("arr_iso"), raw.get("arriveeISO"))
+    duration_min = _first_not_none(raw.get("duration_minutes"), raw.get("duree_minutes"))
 
-    escales = raw.get("nb_stops")
-    if escales is None:
-        escales = raw.get("escales")
-
-    # ISO départ/arrivée
-    dep_iso = raw.get("dep_iso") or raw.get("departISO")
-    arr_iso = raw.get("arr_iso") or raw.get("arriveeISO")
-
-    # Durée minutes
-    duration_min = raw.get("duration_minutes")
-    if duration_min is None:
-        if "duree_minutes" in raw:
-            try:
-                duration_min = int(raw.get("duree_minutes"))
-            except Exception:
-                duration_min = None
-        elif "duree" in raw:
-            duration_min = _parse_iso8601_duration_to_minutes(raw.get("duree"))
-
-    # reconstituer une ISO 8601 “PTxHyM” si minutes fournies
+    # Reconstituer une durée ISO 8601 si minutes fournies
     iso_dur = None
     if isinstance(duration_min, int) and duration_min > 0:
         h, m = divmod(int(duration_min), 60)
         iso_dur = f"PT{h}H{m}M"
 
-    # Flags (on les transmet si présents, sinon True par défaut pour rester non-bloquant)
-    um_ok = raw.get("um_ok")
-    if um_ok is None:
-        um_ok = True
-    animal_ok = raw.get("animal_ok")
-    if animal_ok is None:
-        animal_ok = True
+    # Propager les flags demandés (UM/pets) – pas d’impact prix si non supporté provider
+    um_ok = True if int(criteria.get("um", 0)) == 1 else True
+    animal_ok = True if int(criteria.get("pets", 0)) == 1 else True
 
     return {
         "prix": price,
-        "compagnie": compagnie,
-        "escales": escales,
-        "um_ok": bool(um_ok),
-        "animal_ok": bool(animal_ok),
+        "compagnie": carrier,
+        "escales": nb_stops,
+        "um_ok": um_ok,
+        "animal_ok": animal_ok,
         "departISO": dep_iso,
         "arriveeISO": arr_iso,
-        "duree": iso_dur,              # optionnel
-        "duree_minutes": duration_min, # optionnel
+        "duree": iso_dur,                    # optionnel
+        "duree_minutes": duration_min,       # optionnel
     }
