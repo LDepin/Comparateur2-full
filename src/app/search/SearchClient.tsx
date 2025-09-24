@@ -20,7 +20,6 @@ type CalendarMap = Record<string, CalendarDay>; // "YYYY-MM-DD" -> { prix, dispo
 type SortKey = "price" | "duration" | "depart";
 type ViewMode = "week" | "month";
 
-type FlightRaw = unknown;
 type Flight = {
   prix: number; // > 0 (après filtrage)
   compagnie?: string;
@@ -99,7 +98,7 @@ const frenchWeekLabels = ["L", "M", "M", "J", "V", "S", "D"];
 function classifyPrice(prix: number | null, min: number, max: number) {
   if (prix == null) return "empty";
   if (max === min) return "low";
-  const t = (prix - min) / (max - min);
+  const t = (prix - min) / Math.max(1, max - min);
   if (t <= 0.33) return "low";
   if (t <= 0.66) return "mid";
   return "high";
@@ -159,7 +158,7 @@ function normalizeFlight(r: any): Flight {
 }
 
 /* ============================================================
-   Composant principal (monolithique, stable)
+   Composant principal
 ============================================================ */
 
 export default function SearchClient() {
@@ -369,9 +368,6 @@ export default function SearchClient() {
 
   /* ---------------------------
      Calendrier affiché = union(pinned, calendar)
-     Pour chaque dateKey :
-       prix = pinned[dateKey] ?? calendar[dateKey]?.prix ?? null
-     (toutes les cases évaluées, pas uniquement la sélection)
   --------------------------- */
   const displayCalendar: CalendarMap = useMemo(() => {
     const unionKeys = new Set<string>([
@@ -397,7 +393,7 @@ export default function SearchClient() {
         prix = null;
       }
 
-      const disponible = base?.disponible ?? (prix != null);
+      const disponible = base?.disponible ?? prix != null;
       out[key] = { prix, disponible };
     }
     return out;
@@ -506,7 +502,9 @@ export default function SearchClient() {
         ? "bg-gray-100 border-gray-300 text-gray-400"
         : "bg-rose-100 border-rose-300";
     return (
-      <div className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}>
+      <div
+        className={`rounded border ${cls} px-6 py-6 text-center text-xl font-medium`}
+      >
         {value == null ? "—" : `${value} €`}
       </div>
     );
@@ -528,7 +526,9 @@ export default function SearchClient() {
           selected ? "ring-2 ring-blue-400" : "",
         ].join(" ")}
       >
-        <div className={`text-sm ${selected ? "font-semibold" : ""}`}>{d.getDate()}</div>
+        <div className={`text-sm ${selected ? "font-semibold" : ""}`}>
+          {d.getDate()}
+        </div>
         <div className={compact ? "text-base" : ""}>
           <PriceBadge value={info?.prix ?? null} />
         </div>
@@ -554,11 +554,26 @@ export default function SearchClient() {
   const MonthView = () => (
     <div className="mt-4">
       <div className="mb-3 flex items-center gap-2">
-        <button type="button" onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
+        <button
+          type="button"
+          onClick={goPrevMonth}
+          className="rounded border px-2 py-1"
+        >
+          ◀
+        </button>
         <div className="min-w-[180px] text-center font-medium">
-          {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+          {monthCursor.toLocaleDateString("fr-FR", {
+            month: "long",
+            year: "numeric",
+          })}
         </div>
-        <button type="button" onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
+        <button
+          type="button"
+          onClick={goNextMonth}
+          className="rounded border px-2 py-1"
+        >
+          ▶
+        </button>
       </div>
       <div className="mb-2 grid grid-cols-7 gap-2 text-center text-xs text-gray-500">
         {frenchWeekLabels.map((w, i) => (
@@ -570,7 +585,10 @@ export default function SearchClient() {
           d ? (
             <DayTile key={fmtDate_compat(d)} d={d} compact />
           ) : (
-            <div key={`empty-${i}`} className="rounded border px-2 py-2 opacity-30 h-[72px] sm:h-[84px] md:h-[96px]" />
+            <div
+              key={`empty-${i}`}
+              className="h-[72px] sm:h-[84px] md:h-[96px] rounded border px-2 py-2 opacity-30"
+            />
           )
         )}
       </div>
@@ -586,13 +604,24 @@ export default function SearchClient() {
       width: 320,
     };
     return (
-      <div ref={miniRef} style={style} className="rounded-lg border bg-white p-3 shadow">
+      <div
+        ref={miniRef}
+        style={style}
+        className="rounded-lg border bg-white p-3 shadow"
+      >
         <div className="mb-2 flex items-center justify-between">
-          <button onClick={goPrevMonth} className="rounded border px-2 py-1">◀</button>
+          <button onClick={goPrevMonth} className="rounded border px-2 py-1">
+            ◀
+          </button>
           <div className="text-sm font-medium">
-            {monthCursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+            {monthCursor.toLocaleDateString("fr-FR", {
+              month: "long",
+              year: "numeric",
+            })}
           </div>
-          <button onClick={goNextMonth} className="rounded border px-2 py-1">▶</button>
+          <button onClick={goNextMonth} className="rounded border px-2 py-1">
+            ▶
+          </button>
         </div>
         <div className="mb-1 grid grid-cols-7 gap-1 text-center text-[11px] text-gray-500">
           {frenchWeekLabels.map((w, i) => (
@@ -666,7 +695,10 @@ export default function SearchClient() {
         const s = dep ? dep.getTime() : dayStart + 8 * 3600 * 1000;
         const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
         const clampedS = Math.max(dayStart, Math.min(s, dayEnd));
-        const clampedE = Math.max(dayStart + 10 * 60 * 1000, Math.min(e, dayEnd));
+        const clampedE = Math.max(
+          dayStart + 10 * 60 * 1000,
+          Math.min(e, dayEnd)
+        );
         const left = ((clampedS - dayStart) / (dayEnd - dayStart)) * 100;
         const width = ((clampedE - clampedS) / (dayEnd - dayStart)) * 100;
         return { left, width };
@@ -760,9 +792,8 @@ export default function SearchClient() {
                 {r.dureeMin
                   ? `${Math.floor(r.dureeMin / 60)} h ${r.dureeMin % 60} min`
                   : "—"}{" "}
-                · {typeof r.escales === "number"
-                  ? `${r.escales} escale(s)`
-                  : "—"}
+                ·{" "}
+                {typeof r.escales === "number" ? `${r.escales} escale(s)` : "—"}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full border px-2 py-0.5">
@@ -801,7 +832,9 @@ export default function SearchClient() {
           />
         </div>
         <div className="md:col-span-1">
-          <label className="mb-1 block text-sm text-gray-600">Destination</label>
+          <label className="mb-1 block text-sm text-gray-600">
+            Destination
+          </label>
           <input
             className="w-full rounded border px-3 py-2"
             value={destination}
@@ -912,7 +945,12 @@ export default function SearchClient() {
               Mois
             </button>
           </div>
-          <button onClick={doShare} type="button" className="rounded border px-3 py-1" title="Partager">
+          <button
+            onClick={doShare}
+            type="button"
+            className="rounded border px-3 py-1"
+            title="Partager"
+          >
             🔗 Partager
           </button>
         </div>
@@ -924,7 +962,10 @@ export default function SearchClient() {
           Chargement du calendrier…
           <div className="mt-3 grid grid-cols-7 gap-2">
             {Array.from({ length: 35 }).map((_, i) => (
-              <div key={i} className="h-[72px] sm:h-[84px] md:h-[96px] animate-pulse rounded border bg-gray-100" />
+              <div
+                key={i}
+                className="h-[72px] sm:h-[84px] md:h-[96px] animate-pulse rounded border bg-gray-100"
+              />
             ))}
           </div>
         </div>
