@@ -5,7 +5,7 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_BASE ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
-  "http://localhost:8000";
+  "https://comparateur2-backend.onrender.com"; // fallback https en prod
 
 const nextConfig: NextConfig = {
   // On ne bloque pas les builds Vercel avec ESLint
@@ -14,9 +14,13 @@ const nextConfig: NextConfig = {
   // Rewrites côté Vercel pour appeler directement le backend Render
   async rewrites() {
     return [
+      // Routes “publiques”
       { source: "/calendar", destination: `${API_BASE}/calendar` },
       { source: "/search", destination: `${API_BASE}/search` },
-      // Utile pour un smoke test simple côté Vercel
+
+      // Routes “/api/*” utilisées par le front (SearchClient, ping)
+      { source: "/api/calendar", destination: `${API_BASE}/calendar` },
+      { source: "/api/search", destination: `${API_BASE}/search` },
       { source: "/api/ping", destination: `${API_BASE}/api/ping` },
     ];
   },
