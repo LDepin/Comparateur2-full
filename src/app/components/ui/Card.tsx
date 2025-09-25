@@ -1,7 +1,20 @@
 // src/app/components/ui/Card.tsx
 "use client";
-import React from "react";
+import * as React from "react";
 
-export default function Card({ children, className="" }: React.PropsWithChildren<{className?: string}>) {
-  return <div className={`card p-3 ${className}`}>{children}</div>;
-}
+export type CardProps = React.HTMLAttributes<HTMLDivElement>;
+
+const Card = React.forwardRef<HTMLDivElement, CardProps>(function Card(
+  { className = "", ...props },
+  ref
+) {
+  return (
+    <div
+      ref={ref}
+      className={`card p-3 ${className}`}
+      {...props}
+    />
+  );
+});
+
+export default Card;
