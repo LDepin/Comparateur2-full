@@ -11,8 +11,9 @@ import Badge from "../components/ui/Badge";
 import Card from "../components/ui/Card";
 import Skeleton from "../components/ui/Skeleton";
 import Alert from "../components/ui/Alert";
-import CalendarGrid, { CalendarMap as CalMap, CalendarDay } from "../components/ui/CalendarGrid";
+import CalendarGrid, { CalendarMap as CalMap } from "../components/ui/CalendarGrid";
 import TimelineBar from "../components/ui/TimelineBar";
+import PassengerPicker from "@/app/components/PassengerPicker";
 
 /* ---------------------------
    Types & helpers
@@ -92,6 +93,11 @@ function classifyPrice(prix: number | null, min: number, max: number) {
   return "high";
 }
 
+/** clamp utilitaire (manquait) */
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
 /** Normalise un vol brut -> Flight (prix peut être NaN si invalide, filtré ensuite) */
 function normalizeFlight(r: any): Flight {
   const rawPrice = typeof r?.prix === "number" ? r.prix : Number(r?.prix ?? NaN);
@@ -160,6 +166,18 @@ export default function SearchClient() {
   const [pets, setPets] = useState(params.get("pets") === "1");
   const [view, setView] = useState<ViewMode>((params.get("view") as ViewMode) || "month");
 
+  // 🔢 états passagers/options (présents dans l’UI via <PassengerPicker/>)
+  const [adults, setAdults] = useState<number>(Number(params.get("adults") ?? 1) || 1);
+  const [infants, setInfants] = useState<number>(Number(params.get("infants") ?? 0) || 0);
+  const [childrenAges, setChildrenAges] = useState<number[]>(
+    (params.get("childrenAges") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n >= 2 && n <= 11)
+  );
+
   // data
   const [calendar, setCalendar] = useState<CalendarMap>({});
   const [results, setResults] = useState<Flight[]>([]);
@@ -212,8 +230,12 @@ export default function SearchClient() {
     p.set("um", um ? "1" : "0");
     p.set("pets", pets ? "1" : "0");
     p.set("view", view);
+    // (on ajoutera les nouveaux critères ici dans l'étape suivante étendue)
+    p.set("adults", String(adults));
+    if (childrenAges.length) p.set("childrenAges", childrenAges.join(","));
+    p.set("infants", String(infants));
     return `/search?${p.toString()}`;
-  }, [origin, destination, dateStr, sort, direct, um, pets, view]);
+  }, [origin, destination, dateStr, sort, direct, um, pets, view, adults, infants, childrenAges]);
 
   // pousser l’URL
   useEffect(() => {
@@ -235,7 +257,10 @@ export default function SearchClient() {
         `&month=${m}` +
         (direct ? "&direct=1" : "") +
         (um ? "&um=1" : "") +
-        (pets ? "&pets=1" : "");
+        (pets ? "&pets=1" : "") +
+        `&adults=${adults}` +
+        (childrenAges.length ? `&childrenAges=${childrenAges.join(",")}` : "") +
+        `&infants=${infants}`;
       const r = await fetch(url, { cache: "no-store" });
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       const data = await r.json();
@@ -255,7 +280,7 @@ export default function SearchClient() {
     } finally {
       setLoadingCal(false);
     }
-  }, [origin, destination, direct, um, pets]);
+  }, [origin, destination, direct, um, pets, adults, infants, childrenAges]);
 
   /* ---------------------------
      FETCH résultats
@@ -270,7 +295,10 @@ export default function SearchClient() {
         `&date=${dStr}` +
         (direct ? "&direct=1" : "") +
         (um ? "&um=1" : "") +
-        (pets ? "&pets=1" : "");
+        (pets ? "&pets=1" : "") +
+        `&adults=${adults}` +
+        (childrenAges.length ? `&childrenAges=${childrenAges.join(",")}` : "") +
+        `&infants=${infants}`;
       const r = await fetch(url, { cache: "no-store" });
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       const raw = await r.json();
@@ -303,7 +331,7 @@ export default function SearchClient() {
     } finally {
       setLoadingRes(false);
     }
-  }, [origin, destination, direct, um, pets, sort]);
+  }, [origin, destination, direct, um, pets, sort, adults, infants, childrenAges]);
 
   // init / rafraîchissements
   useEffect(() => {
@@ -379,7 +407,7 @@ export default function SearchClient() {
 
   const monthDays = useMemo(() => {
     const first = firstDayOfMonth(monthCursor);
-    const last = lastDayOfMonth(monthCursor);
+       const last = lastDayOfMonth(monthCursor);
     const startCol = (first.getDay() + 6) % 7;
     const days: (Date | null)[] = [];
     for (let i = 0; i < startCol; i++) days.push(null);
@@ -404,7 +432,7 @@ export default function SearchClient() {
 
   const timelineItems = results.map(r => {
     const dep = parseISOorLocal(r.departISO || "");
-    const arr = parseISOorLocal(r.arriveeISO || "");
+       const arr = parseISOorLocal(r.arriveeISO || "");
     const s = dep ? dep.getTime() : (parseYMDLocal(dateStr)?.getTime() ?? Date.now()) + 8*3600*1000;
     const e = arr ? arr.getTime() : s + (r.dureeMin ?? 120) * 60000;
     return { start: s, end: e };
@@ -518,6 +546,27 @@ export default function SearchClient() {
             <Checkbox checked={pets} onChange={(e) => setPets(e.target.checked)} label="Animaux" />
           </div>
           <Button type="submit">Rechercher</Button>
+        </div>
+
+        {/* Bloc Passagers & options étendues */}
+        <div className="md:col-span-6 rounded border p-3">
+          <PassengerPicker
+            adults={adults}
+            infants={infants}
+            childrenAges={childrenAges}
+            onChange={(next: { adults?: number; infants?: number; childrenAges?: number[] }) => {
+              // clamp/sanitise
+              const ad = clamp(next.adults ?? adults, 1, 9);
+              const inf = clamp(next.infants ?? infants, 0, 3);
+              const ch = (next.childrenAges ?? childrenAges)
+                .filter((n: number) => Number.isFinite(n) && n >= 2 && n <= 11)
+                .map((n: number) => Math.floor(n))
+                .slice(0, 9);
+              setAdults(ad);
+              setInfants(inf);
+              setChildrenAges(ch);
+            }}
+          />
         </div>
       </form>
 
@@ -650,11 +699,15 @@ export default function SearchClient() {
       )}
 
       {/* Timeline + résultats */}
-      <TimelineBar items={timelineItems} selectedIndex={selectedIndex} onSelect={(i) => {
-        setSelectedIndex(i);
-        const el = itemRefs.current[i];
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }} />
+      <TimelineBar
+        items={timelineItems}
+        selectedIndex={selectedIndex}
+        onSelect={(i) => {
+          setSelectedIndex(i);
+          const el = itemRefs.current[i];
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}
+      />
 
       <div className="mt-4 space-y-3">
         {loadingRes ? (
