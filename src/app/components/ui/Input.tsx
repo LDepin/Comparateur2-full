@@ -1,10 +1,15 @@
 // src/app/components/ui/Input.tsx
 "use client";
-import * as React from "react";
+import React from "react";
 
-export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
+type Props = React.InputHTMLAttributes<HTMLInputElement>;
 
-const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
+/**
+ * Input stylé, compatible ref (forwardRef) pour permettre les:
+ * - focus programmatique (ex: dateInputRef.current?.focus())
+ * - validations natives
+ */
+const Input = React.forwardRef<HTMLInputElement, Props>(function Input(
   { className = "", ...rest },
   ref
 ) {
