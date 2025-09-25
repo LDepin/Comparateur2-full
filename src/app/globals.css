@@ -1,26 +1,118 @@
+/* src/app/globals.css */
 @import "tailwindcss";
 
+/* ========= Design Tokens ========= */
 :root {
+  /* couleurs globales existantes */
   --background: #ffffff;
   --foreground: #171717;
+
+  /* palette neutre */
+  --color-bg: var(--background);
+  --color-fg: var(--foreground);
+  --color-muted: #6b7280; /* gray-500 */
+  --color-border: #e5e7eb; /* gray-200 */
+  --color-ring: #3b82f6;   /* blue-500 */
+
+  /* feedback */
+  --color-info: #2563eb;   /* blue-600 */
+  --color-warn: #d97706;   /* amber-600 */
+  --color-error: #dc2626;  /* red-600 */
+  --color-success: #16a34a;/* green-600 */
+
+  /* tokens prix */
+  --price-low-bg: #dcfce7;     /* green-100 */
+  --price-low-border: #86efac; /* green-300 */
+  --price-mid-bg: #fef9c3;     /* yellow-100 */
+  --price-mid-border: #fde047; /* yellow-300 */
+  --price-high-bg: #ffe4e6;    /* rose-100 */
+  --price-high-border: #fecdd3;/* rose-300 */
+  --price-empty-bg: #f3f4f6;   /* gray-100 */
+  --price-empty-border: #d1d5db;/* gray-300 */
+
+  /* rayons / ombres / espaces */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md: 0 4px 10px rgba(0,0,0,.08);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-fg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
+/* Dark mode léger */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --color-border: #262626;
+    --price-empty-bg: #111827;   /* gray-900 equivalent */
+    --price-empty-border: #374151;/* gray-700 */
   }
 }
 
+/* ========= Base ========= */
+html, body {
+  height: 100%;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--color-bg);
+  color: var(--color-fg);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ========= Utilitaires minimes (sans dépendances) ========= */
+.focus-ring {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59,130,246,.4); /* blue-500/40 */
+}
+
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  background: var(--color-bg);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+}
+
+.skeleton {
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    90deg,
+    rgba(0,0,0,0.06) 25%,
+    rgba(0,0,0,0.12) 37%,
+    rgba(0,0,0,0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: sk 1.3s ease infinite;
+}
+@keyframes sk {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* Tokens prix → classes de commodité */
+.price-low   { background: var(--price-low-bg);  border-color: var(--price-low-border); }
+.price-mid   { background: var(--price-mid-bg);  border-color: var(--price-mid-border); }
+.price-high  { background: var(--price-high-bg); border-color: var(--price-high-border); }
+.price-empty { background: var(--price-empty-bg);border-color: var(--price-empty-border); }
