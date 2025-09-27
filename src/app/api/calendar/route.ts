@@ -47,20 +47,44 @@ export async function GET(req: Request) {
     );
   }
 
+  // critères additionnels
+  const direct = searchParams.get("direct") === "1";
+  const um = searchParams.get("um") === "1";
+  const pets = searchParams.get("pets") === "1";
+
+  const adults = searchParams.get("adults") ?? "1";
+  const childrenAges = searchParams.get("childrenAges") ?? "";
+  const infants = searchParams.get("infants") ?? "0";
+  const cabin = searchParams.get("cabin") ?? "eco";
+  const bagsCabin = searchParams.get("bagsCabin") ?? "0";
+  const bagsSoute = searchParams.get("bagsSoute") ?? "0";
+  const fareType = searchParams.get("fareType") ?? "";
+  const resident = searchParams.get("resident") ?? "0";
+  const currency = searchParams.get("currency") ?? "EUR";
+
   const API_BASE = getApiBase();
 
   try {
     await warmUp(API_BASE);
 
-    const url = `${API_BASE}/calendar?origin=${encodeURIComponent(
-      origin
-    )}&destination=${encodeURIComponent(destination)}&month=${encodeURIComponent(
-      month
-    )}`;
+    const url =
+      `${API_BASE}/calendar?origin=${encodeURIComponent(origin)}` +
+      `&destination=${encodeURIComponent(destination)}` +
+      `&month=${encodeURIComponent(month)}` +
+      (direct ? "&direct=1" : "") +
+      (um ? "&um=1" : "") +
+      (pets ? "&pets=1" : "") +
+      `&adults=${encodeURIComponent(adults)}` +
+      (childrenAges ? `&childrenAges=${encodeURIComponent(childrenAges)}` : "") +
+      `&infants=${encodeURIComponent(infants)}` +
+      `&cabin=${encodeURIComponent(cabin)}` +
+      `&bagsCabin=${encodeURIComponent(bagsCabin)}` +
+      `&bagsSoute=${encodeURIComponent(bagsSoute)}` +
+      `&fareType=${encodeURIComponent(fareType)}` +
+      `&resident=${encodeURIComponent(resident)}` +
+      `&currency=${encodeURIComponent(currency)}`;
 
-    // 1er essai
     let upstream = await fetchWithTimeout(url, 25000);
-    // si cold start encore en cours, 2e essai
     if (!upstream.ok) {
       await new Promise((r) => setTimeout(r, 1200));
       upstream = await fetchWithTimeout(url, 25000);

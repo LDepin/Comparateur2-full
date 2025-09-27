@@ -1,0 +1,83 @@
+{
+  "AF": {
+    "um": {
+      "mandatoryUntilAge": 12,
+      "allowedUntilAge": 16,
+      "fee": { "fixed": 50, "perSegment": true, "currency": "EUR" }
+    },
+    "baggage": {
+      "cabinIncluded": 1,
+      "holdIncluded": 0,
+      "holdFee": 35,
+      "cabinFee": 25,
+      "perSegment": true,
+      "brandOverrides": {
+        "basic": { "holdIncluded": 0, "cabinIncluded": 1 },
+        "flex": { "holdIncluded": 1, "cabinIncluded": 1 },
+        "business": { "holdIncluded": 2, "cabinIncluded": 2 }
+      }
+    },
+    "childPricing": {
+      "childPercentOfAdult": 0.75,
+      "infantNoSeatPercent": 0.1,
+      "infantSeatPercent": 0.75
+    },
+    "notes": [
+      "UM obligatoire jusqu'à 12 ans, accepté jusqu'à 16 ans.",
+      "Bagages inclus selon marque tarifaire."
+    ]
+  },
+  "VY": {
+    "um": {
+      "mandatoryUntilAge": 14,
+      "allowedUntilAge": 17,
+      "fee": { "fixed": 40, "perSegment": true, "currency": "EUR" }
+    },
+    "baggage": {
+      "cabinIncluded": 1,
+      "holdIncluded": 0,
+      "holdFee": 30,
+      "cabinFee": 20,
+      "perSegment": true,
+      "brandOverrides": {
+        "basic": { "holdIncluded": 0, "cabinIncluded": 1 },
+        "flex": { "holdIncluded": 1, "cabinIncluded": 1 }
+      }
+    },
+    "childPricing": {
+      "childPercentOfAdult": 0.8,
+      "infantNoSeatPercent": 0.15,
+      "infantSeatPercent": 0.8
+    },
+    "notes": [
+      "UM obligatoire jusqu'à 14 ans, accepté jusqu'à 17 ans."
+    ]
+  },
+  "IB": {
+    "um": {
+      "mandatoryUntilAge": 12,
+      "allowedUntilAge": 17,
+      "fee": { "fixed": 45, "perSegment": true, "currency": "EUR" }
+    },
+    "baggage": {
+      "cabinIncluded": 1,
+      "holdIncluded": 0,
+      "holdFee": 32,
+      "cabinFee": 18,
+      "perSegment": true,
+      "brandOverrides": {
+        "basic": { "holdIncluded": 0, "cabinIncluded": 1 },
+        "flex": { "holdIncluded": 1, "cabinIncluded": 1 },
+        "business": { "holdIncluded": 2, "cabinIncluded": 2 }
+      }
+    },
+    "childPricing": {
+      "childPercentOfAdult": 0.75,
+      "infantNoSeatPercent": 0.1,
+      "infantSeatPercent": 0.75
+    },
+    "notes": [
+      "Politique bagages dépend de la classe et du tarif."
+    ]
+  }
+}

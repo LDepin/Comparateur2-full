@@ -1,0 +1,89 @@
+{
+  "$schema": "https://example.com/carriers.rules.schema.json",
+  "version": 1,
+  "carriers": {
+    "AF": {
+      "name": "Air France (exemple)",
+      "um": {
+        "mandatoryUntilAge": 12,
+        "allowedUntilAge": 17,
+        "fee": { "fixed": 50, "perSegment": true, "currency": "EUR" }
+      },
+      "baggage": {
+        "cabinIncluded": 1,
+        "holdIncluded": 0,
+        "cabinFee": 0,
+        "holdFee": 35,
+        "perSegment": true,
+        "brandOverrides": {
+          "fareType=flex": { "holdIncluded": 1 },
+          "cabin=business": { "holdIncluded": 2 }
+        }
+      },
+      "childPricing": {
+        "childPercentOfAdult": 75,
+        "infantNoSeatPercent": 10,
+        "infantSeatPercent": 75
+      },
+      "notes": [
+        "UM obligatoire < 12 ans si sans adulte.",
+        "Certaines marques tarifaires incluent 1×soute."
+      ]
+    },
+    "U2": {
+      "name": "easyJet (exemple)",
+      "um": {
+        "mandatoryUntilAge": 0,
+        "allowedUntilAge": 0,
+        "fee": { "fixed": 0, "perSegment": false, "currency": "EUR" }
+      },
+      "baggage": {
+        "cabinIncluded": 1,
+        "holdIncluded": 0,
+        "cabinFee": 0,
+        "holdFee": 40,
+        "perSegment": true,
+        "brandOverrides": {
+          "fareType=basic": { "cabinIncluded": 1, "holdIncluded": 0 },
+          "fareType=flex": { "holdIncluded": 1 }
+        }
+      },
+      "childPricing": {
+        "childPercentOfAdult": 100,
+        "infantNoSeatPercent": 15,
+        "infantSeatPercent": 100
+      },
+      "notes": [
+        "Pas de service UM.",
+        "Bébé sans siège à ~15% du tarif adulte."
+      ]
+    },
+    "FR": {
+      "name": "Ryanair (exemple)",
+      "um": {
+        "mandatoryUntilAge": 0,
+        "allowedUntilAge": 0,
+        "fee": { "fixed": 0, "perSegment": false, "currency": "EUR" }
+      },
+      "baggage": {
+        "cabinIncluded": 1,
+        "holdIncluded": 0,
+        "cabinFee": 0,
+        "holdFee": 45,
+        "perSegment": true,
+        "brandOverrides": {
+          "fareType=flex": { "holdIncluded": 1 }
+        }
+      },
+      "childPricing": {
+        "childPercentOfAdult": 100,
+        "infantNoSeatPercent": 20,
+        "infantSeatPercent": 100
+      },
+      "notes": [
+        "Pas de service UM.",
+        "Soute souvent en supplément, dépend de la marque."
+      ]
+    }
+  }
+}
